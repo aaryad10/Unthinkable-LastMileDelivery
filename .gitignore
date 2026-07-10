@@ -23,3 +23,8 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
