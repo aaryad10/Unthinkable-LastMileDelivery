@@ -1,0 +1,6 @@
+{
+  "name": "Last-Mile Delivery Tracker",
+  "description": "A responsive last-mile delivery tracker platform with tailored views and dashboards for Customers, Delivery Agents, and Admins.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
