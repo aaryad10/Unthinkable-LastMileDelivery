@@ -4,11 +4,13 @@ const cors = require("cors");
 
 const authRoutes = require("./routes/auth");
 const orderRoutes = require("./routes/orders");
+const adminRoutes = require("./routes/admin");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use("/admin", adminRoutes);
 
 // Health check
 app.get("/", (req, res) => {
