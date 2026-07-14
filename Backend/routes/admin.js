@@ -6,6 +6,12 @@ const router = express.Router();
 
 router.use(requireAuth, requireRole("admin"));
 
+// GET /admin/customers - list all customers (for "create order on behalf of" picker)
+router.get("/customers", (req, res) => {
+  const customers = db.prepare("SELECT id, name, email, phone FROM users WHERE role = 'customer' ORDER BY name").all();
+  res.json({ customers });
+});
+
 // ---------- ZONES ----------
 
 // GET /admin/zones - list all zones with their pincodes

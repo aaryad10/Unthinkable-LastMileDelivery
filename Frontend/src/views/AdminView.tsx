@@ -13,14 +13,26 @@ interface AdminViewProps {
   id?: string;
 }
 
+interface QuoteResult {
+  pickupZone: { id: number; name: string };
+  dropZone: { id: number; name: string };
+  routeType: 'intra_zone' | 'inter_zone';
+  volumetricWeightKg: number;
+  chargeableWeightKg: number;
+  ratePerKg: number;
+  baseCharge: number;
+  codSurcharge: number;
+  totalCharge: number;
+}
+
 export const AdminView: React.FC<AdminViewProps> = ({
   activeTab,
   setActiveTab,
   id
 }) => {
   const {
-    orders, zones, rateCard, agents, users,
-    addZone, updateRateCard, updateAgent, updateOrderStatus, createOrder, confirmOrder
+    orders, zones, rateCard, agents, customers,
+    addZone, updateRateCard, updateAgent, updateOrderStatus, createOrder, getQuote
   } = useApp();
 
   // Search/Filters
@@ -30,17 +42,20 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [filterAgent, setFilterAgent] = useState<string>('All');
 
   // Order Booking (Same as customer, plus customer picker)
-  const [selectedCustomerId, setSelectedCustomerId] = useState(users[0]?.id || '');
+  const [selectedCustomerId, setSelectedCustomerId] = useState(customers[0]?.id || '');
   const [pickupAddress, setPickupAddress] = useState('');
+  const [pickupPincode, setPickupPincode] = useState('');
   const [dropAddress, setDropAddress] = useState('');
+  const [dropPincode, setDropPincode] = useState('');
   const [length, setLength] = useState<number>(20);
   const [width, setWidth] = useState<number>(15);
   const [height, setHeight] = useState<number>(10);
   const [weight, setWeight] = useState<number>(1.5);
   const [orderType, setOrderType] = useState<'B2B' | 'B2C'>('B2C');
   const [paymentType, setPaymentType] = useState<'Prepaid' | 'COD'>('Prepaid');
-  const [selectedZone, setSelectedZone] = useState('Zone Alpha');
-  const [previewOrder, setPreviewOrder] = useState<Order | null>(null);
+  const [quote, setQuote] = useState<QuoteResult | null>(null);
+  const [isQuoting, setIsQuoting] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
   const [formError, setFormError] = useState('');
 
   // Zone Management State
@@ -80,8 +95,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const completedCount = orders.filter(o => o.status === 'Delivered').length;
   const failureCount = orders.filter(o => o.status === 'Failed').length;
 
-  // Handle Dispatch Order Form Submission -> Generates Preview
-  const handleAdminDispatchSubmit = (e: React.FormEvent) => {
+  // Step 1: Get a live quote (no DB write) via the rate engine
+  const handleAdminDispatchSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
 
@@ -89,48 +104,60 @@ export const AdminView: React.FC<AdminViewProps> = ({
       setFormError('Pickup and drop-off addresses are required.');
       return;
     }
-
-    const pickedUser = users.find(u => u.id === selectedCustomerId);
-    if (!pickedUser) {
+    if (!pickupPincode.trim() || !dropPincode.trim()) {
+      setFormError('Pickup and drop-off pincodes are required to detect delivery zones.');
+      return;
+    }
+    if (!selectedCustomerId) {
       setFormError('Please select a valid customer.');
       return;
     }
 
-    const draft = createOrder({
-      customerName: pickedUser.name,
-      customerEmail: pickedUser.email,
-      customerPhone: pickedUser.phone || '+1 555-0100',
-      pickupAddress,
-      dropAddress,
-      length,
-      width,
-      height,
-      weight,
-      orderType,
-      paymentType,
-      zone: selectedZone,
-      assignedAgentId: 'agent-1' // Auto assigned default
-    });
-
-    setPreviewOrder(draft);
+    setIsQuoting(true);
+    try {
+      const result = await getQuote({
+        length, width, height, weight, orderType, paymentType, pickupPincode, dropPincode,
+      });
+      setQuote(result);
+    } catch (err: any) {
+      setFormError(err.message || 'Could not calculate charge. Check that both pincodes are within a configured service zone.');
+      setQuote(null);
+    } finally {
+      setIsQuoting(false);
+    }
   };
 
-  const handleConfirmDispatch = () => {
-    if (previewOrder) {
-      confirmOrder(previewOrder);
-      
+  // Step 2: Actually create the order (real DB write) once the admin confirms
+  const handleConfirmDispatch = async () => {
+    if (!quote) return;
+    setIsConfirming(true);
+    setFormError('');
+
+    const result = await createOrder({
+      pickupAddress, pickupPincode, dropAddress, dropPincode,
+      length, width, height, weight, orderType, paymentType,
+      customerId: selectedCustomerId,
+    });
+
+    setIsConfirming(false);
+
+    if (result.success) {
       // Reset Form fields
       setPickupAddress('');
+      setPickupPincode('');
       setDropAddress('');
+      setDropPincode('');
       setLength(20);
       setWidth(15);
       setHeight(10);
       setWeight(1.5);
-      setPreviewOrder(null);
+      setQuote(null);
       setFormError('');
 
       // Go back to Dashboard Control Center
       setActiveTab('dashboard');
+    } else {
+      setFormError(result.error || 'Failed to confirm booking. Please try again.');
     }
   };
 
@@ -406,7 +433,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   onChange={(e) => setSelectedCustomerId(e.target.value)}
                   className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 bg-white focus:outline-hidden focus:border-blue-500"
                 >
-                  {users.filter(u => u.role === 'Customer').map(cust => (
+                  {customers.map(cust => (
                     <option key={cust.id} value={cust.id}>
                       {cust.name} ({cust.email})
                     </option>
@@ -414,71 +441,85 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </select>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                    Service Zone
-                  </label>
-                  <select
-                    value={selectedZone}
-                    onChange={(e) => setSelectedZone(e.target.value)}
-                    className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 bg-white focus:outline-hidden"
+              <div>
+                <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                  Order Type
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOrderType('B2C')}
+                    className={`py-2 px-1 text-xs font-semibold border rounded-lg transition ${orderType === 'B2C' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-slate-600 border-slate-200'}`}
                   >
-                    {zones.map(z => (
-                      <option key={z.id} value={z.name}>{z.name} (Coverage: {z.pincodes.join(', ')})</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                    Order Type
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setOrderType('B2C')}
-                      className={`py-2 px-1 text-xs font-semibold border rounded-lg transition ${orderType === 'B2C' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-slate-600 border-slate-200'}`}
-                    >
-                      B2C (Retail)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setOrderType('B2B')}
-                      className={`py-2 px-1 text-xs font-semibold border rounded-lg transition ${orderType === 'B2B' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-slate-600 border-slate-200'}`}
-                    >
-                      B2B (Enterprise)
-                    </button>
-                  </div>
+                    B2C (Retail)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOrderType('B2B')}
+                    className={`py-2 px-1 text-xs font-semibold border rounded-lg transition ${orderType === 'B2B' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-slate-600 border-slate-200'}`}
+                  >
+                    B2B (Enterprise)
+                  </button>
                 </div>
               </div>
 
-              {/* Addresses */}
+              {/* Addresses + Pincodes (pincodes drive server-side zone detection) */}
               <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                    Pickup Address
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={pickupAddress}
-                    onChange={(e) => setPickupAddress(e.target.value)}
-                    placeholder="Sector Alpha Logistics Center Unit 12..."
-                    className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-hidden"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                      Pickup Address
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={pickupAddress}
+                      onChange={(e) => setPickupAddress(e.target.value)}
+                      placeholder="Sector Alpha Logistics Center Unit 12..."
+                      className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-hidden"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                      Pickup Pincode
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={pickupPincode}
+                      onChange={(e) => setPickupPincode(e.target.value)}
+                      placeholder="e.g. 411001"
+                      className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-hidden"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                    Drop-off Address
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={dropAddress}
-                    onChange={(e) => setDropAddress(e.target.value)}
-                    placeholder="Residential Sector 5 House 2..."
-                    className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-hidden"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                      Drop-off Address
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={dropAddress}
+                      onChange={(e) => setDropAddress(e.target.value)}
+                      placeholder="Residential Sector 5 House 2..."
+                      className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-hidden"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                      Drop-off Pincode
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={dropPincode}
+                      onChange={(e) => setDropPincode(e.target.value)}
+                      placeholder="e.g. 411014"
+                      className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-hidden"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -557,10 +598,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
               <button
                 type="submit"
-                className="w-full flex items-center justify-center gap-1.5 py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold transition"
+                disabled={isQuoting}
+                className="w-full flex items-center justify-center gap-1.5 py-2.5 px-4 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white rounded-lg text-xs font-semibold transition"
               >
                 <Calculator className="w-4 h-4" />
-                Calculate Charge & Compile Invoice
+                {isQuoting ? 'Calculating...' : 'Calculate Charge & Compile Invoice'}
               </button>
             </form>
           </div>
@@ -570,46 +612,55 @@ export const AdminView: React.FC<AdminViewProps> = ({
             <div className="bg-slate-900 text-white rounded-xl p-6 border border-slate-800 shadow-sm">
               <h3 className="text-sm font-mono font-bold text-slate-400 tracking-widest uppercase mb-4">Calculated Invoice</h3>
 
-              {previewOrder ? (
+              {quote ? (
                 <div className="space-y-4 animate-fade-in">
                   <div>
                     <span className="text-[10px] font-mono text-slate-500 block">RECIPIENT CLIENT</span>
-                    <span className="text-sm font-semibold text-white block truncate">{previewOrder.customerName}</span>
+                    <span className="text-sm font-semibold text-white block truncate">
+                      {customers.find(c => c.id === selectedCustomerId)?.name || 'Unknown customer'}
+                    </span>
                   </div>
 
                   <div>
                     <span className="text-[10px] font-mono text-slate-500 block">COURIER SECTOR</span>
-                    <span className="text-xs font-mono text-slate-300 block">{previewOrder.zone}</span>
+                    <span className="text-xs font-mono text-slate-300 block">
+                      {quote.pickupZone.name} → {quote.dropZone.name} ({quote.routeType === 'intra_zone' ? 'Intra-zone' : 'Inter-zone'})
+                    </span>
                   </div>
 
                   <div className="space-y-1.5 pt-4 border-t border-slate-800 text-xs">
                     <div className="flex justify-between text-slate-400">
-                      <span>Base route cost ({previewOrder.orderType})</span>
-                      <span>${(previewOrder.charge - (previewOrder.paymentType === 'COD' ? rateCard.codSurcharge[previewOrder.orderType] : 0)).toFixed(2)}</span>
+                      <span>Chargeable weight</span>
+                      <span>{quote.chargeableWeightKg.toFixed(2)} kg (vol: {quote.volumetricWeightKg.toFixed(2)} kg)</span>
                     </div>
-                    {previewOrder.paymentType === 'COD' && (
+                    <div className="flex justify-between text-slate-400">
+                      <span>Base route cost ({orderType} @ ${quote.ratePerKg}/kg)</span>
+                      <span>${quote.baseCharge.toFixed(2)}</span>
+                    </div>
+                    {paymentType === 'COD' && (
                       <div className="flex justify-between text-amber-400 font-medium">
                         <span>COD Cash Handling Surcharge</span>
-                        <span>+${rateCard.codSurcharge[previewOrder.orderType].toFixed(2)}</span>
+                        <span>+${quote.codSurcharge.toFixed(2)}</span>
                       </div>
                     )}
 
                     <div className="flex justify-between text-md pt-3 border-t border-dashed border-slate-800 font-semibold text-white">
                       <span>Platform total cost</span>
-                      <span className="text-lg text-blue-400 font-bold">${previewOrder.charge.toFixed(2)}</span>
+                      <span className="text-lg text-blue-400 font-bold">${quote.totalCharge.toFixed(2)}</span>
                     </div>
                   </div>
 
                   <div className="pt-4 space-y-2">
                     <button
                       onClick={handleConfirmDispatch}
-                      className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-xs shadow-sm transition flex items-center justify-center gap-1.5"
+                      disabled={isConfirming}
+                      className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold rounded-lg text-xs shadow-sm transition flex items-center justify-center gap-1.5"
                     >
                       <ShieldCheck className="w-4 h-4" />
-                      Dispatch & Assign Courier
+                      {isConfirming ? 'Dispatching...' : 'Dispatch & Assign Courier'}
                     </button>
                     <button
-                      onClick={() => setPreviewOrder(null)}
+                      onClick={() => setQuote(null)}
                       className="w-full py-2 bg-transparent text-slate-400 hover:text-slate-200 text-[11px] font-semibold rounded"
                     >
                       Discard Draft

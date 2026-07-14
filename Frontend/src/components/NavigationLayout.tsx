@@ -19,18 +19,15 @@ export const NavigationLayout: React.FC<NavigationLayoutProps> = ({
   children,
   id
 }) => {
-  const { currentUser, logout, login, orders } = useApp();
+  const { currentUser, logout, orders } = useApp();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (!currentUser) return <>{children}</>;
 
-  // Filter orders related to counts
-  const customerOrders = orders.filter(o => o.customerEmail === currentUser.email);
-  const activeCustomerOrdersCount = customerOrders.filter(o => ['Picked Up', 'In Transit', 'Out for Delivery'].includes(o.status)).length;
-
-  const agentOrders = orders.filter(o => o.assignedAgentId === currentUser.id || o.assignedAgentId === 'agent-1'); // Robert Chen / fallback
-  const activeAgentOrdersCount = agentOrders.filter(o => ['Picked Up', 'In Transit', 'Out for Delivery'].includes(o.status)).length;
-
+  // orders in context is already scoped by the backend to the current
+  // user's role (customer -> own orders, agent -> assigned orders,
+  // admin -> everything), so no client-side re-filtering is needed here.
+  const activeOrdersCount = orders.filter(o => ['Picked Up', 'In Transit', 'Out for Delivery'].includes(o.status)).length;
   const totalOrdersCount = orders.length;
 
   interface NavTab {
@@ -43,13 +40,13 @@ export const NavigationLayout: React.FC<NavigationLayoutProps> = ({
 
   // Tabs by Role
   const customerTabs: NavTab[] = [
-    { id: 'dashboard', label: 'My Shipments', icon: LayoutDashboard, badge: activeCustomerOrdersCount },
+    { id: 'dashboard', label: 'My Shipments', icon: LayoutDashboard, badge: activeOrdersCount },
     { id: 'create', label: 'Book Delivery', icon: PlusCircle },
     { id: 'tracking', label: 'Live Tracking', icon: Navigation, disabled: !selectedOrderId },
   ];
 
   const agentTabs: NavTab[] = [
-    { id: 'dashboard', label: 'My Worklist', icon: LayoutDashboard, badge: activeAgentOrdersCount },
+    { id: 'dashboard', label: 'My Worklist', icon: LayoutDashboard, badge: activeOrdersCount },
     { id: 'detail', label: 'Status Update Console', icon: Truck, disabled: !selectedOrderId },
   ];
 
@@ -164,28 +161,6 @@ export const NavigationLayout: React.FC<NavigationLayoutProps> = ({
               <div className="w-8 h-8 bg-blue-500 rounded-lg flex lg:hidden items-center justify-center font-bold text-white text-xs">SL</div>
               <h2 className="text-lg font-bold text-slate-800 tracking-tight">Operations Command</h2>
             </div>
-
-            {/* Pill-style role switcher */}
-            <div className="hidden md:flex bg-slate-100 p-1 rounded-md">
-              <button
-                onClick={() => { login('customer@tracker.com', 'Customer'); setActiveTab('dashboard'); }}
-                className={`px-3 py-1 text-xs font-medium rounded transition-all duration-200 ${currentUser.role === 'Customer' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
-              >
-                Customer
-              </button>
-              <button
-                onClick={() => { login('agent1@tracker.com', 'Delivery Agent'); setActiveTab('dashboard'); }}
-                className={`px-3 py-1 text-xs font-medium rounded transition-all duration-200 ${currentUser.role === 'Delivery Agent' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
-              >
-                Agent
-              </button>
-              <button
-                onClick={() => { login('admin@tracker.com', 'Admin'); setActiveTab('dashboard'); }}
-                className={`px-3 py-1 text-xs font-medium rounded transition-all duration-200 ${currentUser.role === 'Admin' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
-              >
-                Admin
-              </button>
-            </div>
           </div>
 
           <div className="flex items-center space-x-4">
@@ -282,33 +257,6 @@ export const NavigationLayout: React.FC<NavigationLayoutProps> = ({
 
             {/* Drawer Footer */}
             <div className="p-4 border-t border-slate-800 space-y-3">
-              {/* Dev Quick-Switch */}
-              <div className="bg-slate-950/60 rounded-lg p-2.5 border border-slate-800/80">
-                <span className="text-[9px] font-mono font-bold tracking-wider text-slate-500 block mb-1.5 uppercase">
-                  DEMO ROLES
-                </span>
-                <div className="grid grid-cols-3 gap-1">
-                  <button
-                    onClick={() => { login('customer@tracker.com', 'Customer'); setActiveTab('dashboard'); setMobileOpen(false); }}
-                    className="text-[8px] font-mono py-1 rounded bg-slate-900 text-slate-400 text-center hover:bg-slate-800"
-                  >
-                    Cust
-                  </button>
-                  <button
-                    onClick={() => { login('agent1@tracker.com', 'Delivery Agent'); setActiveTab('dashboard'); setMobileOpen(false); }}
-                    className="text-[8px] font-mono py-1 rounded bg-slate-900 text-slate-400 text-center hover:bg-slate-800"
-                  >
-                    Agent
-                  </button>
-                  <button
-                    onClick={() => { login('admin@tracker.com', 'Admin'); setActiveTab('dashboard'); setMobileOpen(false); }}
-                    className="text-[8px] font-mono py-1 rounded bg-slate-900 text-slate-400 text-center hover:bg-slate-800"
-                  >
-                    Admin
-                  </button>
-                </div>
-              </div>
-
               <button
                 onClick={() => { logout(); setMobileOpen(false); }}
                 className="w-full flex items-center justify-center gap-2 py-2 text-xs font-semibold rounded-lg text-slate-400 hover:bg-rose-950/20 hover:text-rose-400 transition"

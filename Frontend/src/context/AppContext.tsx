@@ -1,395 +1,404 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Order, Zone, RateCard, Agent, User, DeliveryStatus, TimelineEvent } from '../types';
+import { api } from '../api';
 
 interface AppContextType {
   currentUser: User | null;
+  isLoading: boolean;
   orders: Order[];
   zones: Zone[];
   rateCard: RateCard;
   agents: Agent[];
-  users: User[];
-  login: (email: string, role: 'Customer' | 'Delivery Agent' | 'Admin') => boolean;
-  register: (name: string, email: string, phone: string) => boolean;
+  customers: User[]; // for admin's "create order on behalf of" picker
+  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  register: (name: string, email: string, password: string, phone: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
-  createOrder: (orderData: Omit<Order, 'id' | 'status' | 'timeline' | 'createdAt' | 'charge'>) => Order;
-  confirmOrder: (order: Order) => void;
-  updateOrderStatus: (orderId: string, status: DeliveryStatus, notes?: string) => void;
-  rescheduleDelivery: (orderId: string, date: string) => void;
-  addZone: (name: string, pincodes: string[]) => void;
-  updateRateCard: (newRates: RateCard) => void;
-  updateAgent: (agentId: string, updates: Partial<Agent>) => void;
-  calculateCharge: (params: {
-    length: number;
-    width: number;
-    height: number;
-    weight: number;
-    orderType: 'B2B' | 'B2C';
-    paymentType: 'Prepaid' | 'COD';
-    routeType: 'intraZone' | 'interZone';
-  }) => number;
+  refreshOrders: () => Promise<void>;
+  getQuote: (params: QuoteParams) => Promise<any>;
+  createOrder: (orderData: CreateOrderParams) => Promise<{ success: boolean; order?: Order; error?: string }>;
+  updateOrderStatus: (orderId: string, status: DeliveryStatus, notes?: string) => Promise<{ success: boolean; error?: string }>;
+  rescheduleDelivery: (orderId: string, date: string) => Promise<{ success: boolean; error?: string }>;
+  assignAgent: (orderId: string, agentId?: string, auto?: boolean) => Promise<{ success: boolean; error?: string }>;
+  addZone: (name: string, pincodes: string[]) => Promise<{ success: boolean; error?: string }>;
+  updateRateCard: (routeType: 'intraZone' | 'interZone', orderType: 'B2B' | 'B2C', rate: number) => Promise<{ success: boolean; error?: string }>;
+  updateCodSurcharge: (orderType: 'B2B' | 'B2C', surcharge: number) => Promise<{ success: boolean; error?: string }>;
+  updateAgent: (agentId: string, updates: { zoneId?: string; availability?: 'available' | 'busy' | 'offline' }) => Promise<{ success: boolean; error?: string }>;
+}
+
+interface QuoteParams {
+  length: number;
+  width: number;
+  height: number;
+  weight: number;
+  orderType: 'B2B' | 'B2C';
+  paymentType: 'Prepaid' | 'COD';
+  pickupPincode: string;
+  dropPincode: string;
+}
+
+interface CreateOrderParams {
+  pickupAddress: string;
+  pickupPincode: string;
+  dropAddress: string;
+  dropPincode: string;
+  length: number;
+  width: number;
+  height: number;
+  weight: number;
+  orderType: 'B2B' | 'B2C';
+  paymentType: 'Prepaid' | 'COD';
+  customerId?: string; // admin creating on behalf of a customer
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-// Initial mock data
-const INITIAL_ZONES: Zone[] = [
-  { id: 'zone-1', name: 'Zone Alpha', pincodes: ['100001', '100002', '100003'] },
-  { id: 'zone-2', name: 'Zone Beta', pincodes: ['200001', '200002', '200003'] },
-  { id: 'zone-3', name: 'Zone Gamma', pincodes: ['300001', '300002'] },
-];
+// ---------- Mapping helpers: backend (snake_case) -> frontend types ----------
 
-const INITIAL_RATE_CARD: RateCard = {
-  intraZone: { B2B: 12, B2C: 15 },
-  interZone: { B2B: 24, B2C: 30 },
-  codSurcharge: { B2B: 10, B2C: 15 },
+function mapRole(backendRole: string): 'Customer' | 'Delivery Agent' | 'Admin' {
+  if (backendRole === 'admin') return 'Admin';
+  if (backendRole === 'agent') return 'Delivery Agent';
+  return 'Customer';
+}
+
+function mapUser(u: any): User {
+  return {
+    id: String(u.id),
+    name: u.name,
+    email: u.email,
+    phone: u.phone || undefined,
+    role: mapRole(u.role),
+  };
+}
+
+function mapTimelineEvent(h: any): TimelineEvent {
+  return {
+    status: h.status as DeliveryStatus,
+    timestamp: h.timestamp,
+    notes: h.notes || '',
+    actor: h.actor_label,
+  };
+}
+
+function mapOrder(o: any): Order {
+  return {
+    id: o.order_code,
+    dbId: o.id,
+    customerName: o.customer_name || '',
+    customerEmail: o.customer_email || '',
+    customerPhone: o.customer_phone || '',
+    pickupAddress: o.pickup_address,
+    dropAddress: o.drop_address,
+    length: o.length_cm,
+    width: o.width_cm,
+    height: o.height_cm,
+    weight: o.actual_weight_kg,
+    orderType: o.order_type,
+    paymentType: o.payment_type,
+    status: o.status as DeliveryStatus,
+    charge: o.charge,
+    assignedAgentId: o.assigned_agent_id ? String(o.assigned_agent_id) : '',
+    zone: o.pickup_zone_name || '',
+    timeline: Array.isArray(o.timeline) ? o.timeline.map(mapTimelineEvent) : [],
+    createdAt: o.created_at,
+    scheduledDate: o.scheduled_date || undefined,
+  };
+}
+
+function mapZone(z: any): Zone {
+  return {
+    id: String(z.id),
+    name: z.name,
+    pincodes: z.pincodes || [],
+  };
+}
+
+function mapAgent(a: any): Agent {
+  return {
+    id: String(a.id),
+    name: a.name,
+    email: a.email,
+    phone: a.phone || '',
+    zone: a.zone_name || '',
+    status: a.availability === 'offline' ? 'busy' : a.availability, // UI only models available/busy
+  };
+}
+
+function mapRateCard(rateCards: any[], codSurcharge: any[]): RateCard {
+  const find = (routeType: string, orderType: string) =>
+    rateCards.find((r) => r.route_type === routeType && r.order_type === orderType)?.rate_per_kg || 0;
+  const findCod = (orderType: string) =>
+    codSurcharge.find((c) => c.order_type === orderType)?.surcharge || 0;
+
+  return {
+    intraZone: { B2B: find('intra_zone', 'B2B'), B2C: find('intra_zone', 'B2C') },
+    interZone: { B2B: find('inter_zone', 'B2B'), B2C: find('inter_zone', 'B2C') },
+    codSurcharge: { B2B: findCod('B2B'), B2C: findCod('B2C') },
+  };
+}
+
+const EMPTY_RATE_CARD: RateCard = {
+  intraZone: { B2B: 0, B2C: 0 },
+  interZone: { B2B: 0, B2C: 0 },
+  codSurcharge: { B2B: 0, B2C: 0 },
 };
 
-const INITIAL_AGENTS: Agent[] = [
-  { id: 'agent-1', name: 'Robert Chen', email: 'agent1@tracker.com', phone: '+1 555-0101', zone: 'Zone Alpha', status: 'available' },
-  { id: 'agent-2', name: 'Sarah Jenkins', email: 'agent2@tracker.com', phone: '+1 555-0102', zone: 'Zone Beta', status: 'busy' },
-  { id: 'agent-3', name: 'Marcus Brody', email: 'agent3@tracker.com', phone: '+1 555-0103', zone: 'Zone Gamma', status: 'available' },
-];
-
-const INITIAL_USERS: User[] = [
-  { id: 'customer-1', name: 'Aarya Deshpande', email: 'customer@tracker.com', phone: '+1 555-0199', role: 'Customer' },
-  { id: 'customer-2', name: 'Acme Corporates', email: 'acme@tracker.com', phone: '+1 555-0200', role: 'Customer' },
-  { id: 'agent-1-user', name: 'Robert Chen', email: 'agent1@tracker.com', role: 'Delivery Agent' },
-  { id: 'agent-2-user', name: 'Sarah Jenkins', email: 'agent2@tracker.com', role: 'Delivery Agent' },
-  { id: 'admin-1-user', name: 'Control Center', email: 'admin@tracker.com', role: 'Admin' },
-];
-
-const INITIAL_ORDERS: Order[] = [
-  {
-    id: 'ORD-1001',
-    customerName: 'Aarya Deshpande',
-    customerEmail: 'customer@tracker.com',
-    customerPhone: '+1 555-0199',
-    pickupAddress: 'Sector 5, Greenwood Block, Zone Alpha',
-    dropAddress: 'Hillside Avenue House 21, Zone Alpha',
-    length: 25,
-    width: 20,
-    height: 15,
-    weight: 2.2,
-    orderType: 'B2C',
-    paymentType: 'Prepaid',
-    status: 'Delivered',
-    charge: 54.00,
-    assignedAgentId: 'agent-1',
-    zone: 'Zone Alpha',
-    createdAt: '2026-07-08 09:15 AM',
-    timeline: [
-      { status: 'Picked Up', timestamp: '2026-07-08 10:30 AM', notes: 'Package scanned and picked up by Robert Chen', actor: 'Agent: Robert Chen' },
-      { status: 'In Transit', timestamp: '2026-07-08 11:45 AM', notes: 'In transit to last-mile hub', actor: 'Agent: Robert Chen' },
-      { status: 'Out for Delivery', timestamp: '2026-07-08 02:10 PM', notes: 'Out for delivery with agent Robert', actor: 'Agent: Robert Chen' },
-      { status: 'Delivered', timestamp: '2026-07-08 03:30 PM', notes: 'Delivered to recipient, signed by gate keeper', actor: 'Agent: Robert Chen' }
-    ]
-  },
-  {
-    id: 'ORD-1002',
-    customerName: 'Aarya Deshpande',
-    customerEmail: 'customer@tracker.com',
-    customerPhone: '+1 555-0199',
-    pickupAddress: 'Sector 5, Greenwood Block, Zone Alpha',
-    dropAddress: 'Tech Park Plaza, Tower B, Zone Beta',
-    length: 30,
-    width: 30,
-    height: 25,
-    weight: 5.0,
-    orderType: 'B2C',
-    paymentType: 'COD',
-    status: 'In Transit',
-    charge: 165.00,
-    assignedAgentId: 'agent-2',
-    zone: 'Zone Beta',
-    createdAt: '2026-07-09 08:00 AM',
-    timeline: [
-      { status: 'Picked Up', timestamp: '2026-07-09 09:30 AM', notes: 'Picked up from customer warehouse', actor: 'Agent: Sarah Jenkins' },
-      { status: 'In Transit', timestamp: '2026-07-09 11:00 AM', notes: 'Dispatched towards Zone Beta delivery hub', actor: 'Agent: Sarah Jenkins' }
-    ]
-  },
-  {
-    id: 'ORD-1003',
-    customerName: 'Acme Corporates',
-    customerEmail: 'acme@tracker.com',
-    customerPhone: '+1 555-0200',
-    pickupAddress: 'Warehouse A, Industry Blvd, Zone Gamma',
-    dropAddress: 'Retail Hub Center, Zone Alpha',
-    length: 100,
-    width: 60,
-    height: 50,
-    weight: 22.5,
-    orderType: 'B2B',
-    paymentType: 'Prepaid',
-    status: 'Picked Up',
-    charge: 720.00,
-    assignedAgentId: 'agent-1',
-    zone: 'Zone Alpha',
-    createdAt: '2026-07-09 11:30 AM',
-    timeline: [
-      { status: 'Picked Up', timestamp: '2026-07-09 01:00 PM', notes: 'Bulk shipment collected', actor: 'Agent: Robert Chen' }
-    ]
-  },
-  {
-    id: 'ORD-1004',
-    customerName: 'Aarya Deshpande',
-    customerEmail: 'customer@tracker.com',
-    customerPhone: '+1 555-0199',
-    pickupAddress: 'Residential Block 12, Zone Alpha',
-    dropAddress: 'Sunset Apartments Floor 3, Zone Alpha',
-    length: 15,
-    width: 15,
-    height: 10,
-    weight: 0.8,
-    orderType: 'B2C',
-    paymentType: 'COD',
-    status: 'Failed',
-    charge: 30.00,
-    assignedAgentId: 'agent-3',
-    zone: 'Zone Alpha',
-    createdAt: '2026-07-08 04:00 PM',
-    timeline: [
-      { status: 'Picked Up', timestamp: '2026-07-08 05:00 PM', notes: 'Package collected', actor: 'Agent: Marcus Brody' },
-      { status: 'Out for Delivery', timestamp: '2026-07-09 10:00 AM', notes: 'Out for delivery', actor: 'Agent: Marcus Brody' },
-      { status: 'Failed', timestamp: '2026-07-09 02:00 PM', notes: 'Customer not reachable, door locked', actor: 'Agent: Marcus Brody' }
-    ]
-  }
-];
-
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('delivery_tracker_user');
-    return saved ? JSON.parse(saved) : INITIAL_USERS[0]; // Default to first customer for convenience
-  });
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [zones, setZones] = useState<Zone[]>([]);
+  const [rateCard, setRateCard] = useState<RateCard>(EMPTY_RATE_CARD);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [customers, setCustomers] = useState<User[]>([]);
 
-  const [orders, setOrders] = useState<Order[]>(() => {
-    const saved = localStorage.getItem('delivery_tracker_orders');
-    return saved ? JSON.parse(saved) : INITIAL_ORDERS;
-  });
-
-  const [zones, setZones] = useState<Zone[]>(() => {
-    const saved = localStorage.getItem('delivery_tracker_zones');
-    return saved ? JSON.parse(saved) : INITIAL_ZONES;
-  });
-
-  const [rateCard, setRateCard] = useState<RateCard>(() => {
-    const saved = localStorage.getItem('delivery_tracker_ratecard');
-    return saved ? JSON.parse(saved) : INITIAL_RATE_CARD;
-  });
-
-  const [agents, setAgents] = useState<Agent[]>(() => {
-    const saved = localStorage.getItem('delivery_tracker_agents');
-    return saved ? JSON.parse(saved) : INITIAL_AGENTS;
-  });
-
-  const [users, setUsers] = useState<User[]>(() => {
-    const saved = localStorage.getItem('delivery_tracker_users');
-    return saved ? JSON.parse(saved) : INITIAL_USERS;
-  });
-
-  // Sync state to LocalStorage
+  // Restore session on page load if a token exists
   useEffect(() => {
-    localStorage.setItem('delivery_tracker_user', JSON.stringify(currentUser));
+    const restoreSession = async () => {
+      const token = api.getToken();
+      if (!token) {
+        setIsLoading(false);
+        return;
+      }
+      try {
+        const res = await api.me();
+        setCurrentUser(mapUser(res.user));
+      } catch {
+        api.clearToken();
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    restoreSession();
+  }, []);
+
+  // Load orders + zones + agents (+ rate card / customers for admin) whenever the user changes
+  useEffect(() => {
+    if (!currentUser) {
+      setOrders([]);
+      setZones([]);
+      setAgents([]);
+      setCustomers([]);
+      setRateCard(EMPTY_RATE_CARD);
+      return;
+    }
+    refreshOrders();
+    loadZonesAndAgents();
+    if (currentUser.role === 'Admin') {
+      loadRateCard();
+      loadCustomers();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
 
-  useEffect(() => {
-    localStorage.setItem('delivery_tracker_orders', JSON.stringify(orders));
-  }, [orders]);
-
-  useEffect(() => {
-    localStorage.setItem('delivery_tracker_zones', JSON.stringify(zones));
-  }, [zones]);
-
-  useEffect(() => {
-    localStorage.setItem('delivery_tracker_ratecard', JSON.stringify(rateCard));
-  }, [rateCard]);
-
-  useEffect(() => {
-    localStorage.setItem('delivery_tracker_agents', JSON.stringify(agents));
-  }, [agents]);
-
-  useEffect(() => {
-    localStorage.setItem('delivery_tracker_users', JSON.stringify(users));
-  }, [users]);
-
-  // Authenticate user
-  const login = (email: string, role: 'Customer' | 'Delivery Agent' | 'Admin'): boolean => {
-    const foundUser = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.role === role);
-    if (foundUser) {
-      setCurrentUser(foundUser);
-      return true;
+  const refreshOrders = async () => {
+    try {
+      const res = await api.listOrders();
+      setOrders(res.orders.map(mapOrder));
+    } catch (err) {
+      console.error('Failed to load orders:', err);
     }
-    // Auto-create for demo convenience if user doesn't exist
-    const demoName = email.split('@')[0];
-    const formattedName = demoName.charAt(0).toUpperCase() + demoName.slice(1);
-    const newUser: User = {
-      id: `${role.toLowerCase()}-${Date.now()}`,
-      name: formattedName,
-      email: email.toLowerCase(),
-      role
-    };
-    setUsers(prev => [...prev, newUser]);
-    setCurrentUser(newUser);
-    return true;
   };
 
-  const register = (name: string, email: string, phone: string): boolean => {
-    // Register as customer only as per requirement
-    const emailExists = users.some(u => u.email.toLowerCase() === email.toLowerCase());
-    if (emailExists) return false;
+  const loadZonesAndAgents = async () => {
+    try {
+      // Zones and agents are admin-only endpoints on the backend; only fetch
+      // if the current role is allowed to, otherwise silently skip.
+      if (currentUser?.role === 'Admin') {
+        const [zonesRes, agentsRes] = await Promise.all([api.listZones(), api.listAgents()]);
+        setZones(zonesRes.zones.map(mapZone));
+        setAgents(agentsRes.agents.map(mapAgent));
+      }
+    } catch (err) {
+      console.error('Failed to load zones/agents:', err);
+    }
+  };
 
-    const newUser: User = {
-      id: `customer-${Date.now()}`,
-      name,
-      email: email.toLowerCase(),
-      phone,
-      role: 'Customer'
-    };
-    setUsers(prev => [...prev, newUser]);
-    setCurrentUser(newUser);
-    return true;
+  const loadRateCard = async () => {
+    try {
+      const res = await api.getRateCards();
+      setRateCard(mapRateCard(res.rateCards, res.codSurcharge));
+    } catch (err) {
+      console.error('Failed to load rate card:', err);
+    }
+  };
+
+  const loadCustomers = async () => {
+    try {
+      const res = await api.listCustomers();
+      setCustomers(res.customers.map(mapUser));
+    } catch (err) {
+      console.error('Failed to load customers:', err);
+    }
+  };
+
+  const login = async (email: string, password: string) => {
+    try {
+      const res = await api.login(email, password);
+      api.setToken(res.token);
+      setCurrentUser(mapUser(res.user));
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Login failed' };
+    }
+  };
+
+  const register = async (name: string, email: string, password: string, phone: string) => {
+    try {
+      const res = await api.register(name, email, password, phone);
+      api.setToken(res.token);
+      setCurrentUser(mapUser(res.user));
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Registration failed' };
+    }
   };
 
   const logout = () => {
+    api.clearToken();
     setCurrentUser(null);
   };
 
-  // Charge Calculation Core Logic
-  const calculateCharge = (params: {
-    length: number;
-    width: number;
-    height: number;
-    weight: number;
-    orderType: 'B2B' | 'B2C';
-    paymentType: 'Prepaid' | 'COD';
-    routeType: 'intraZone' | 'interZone';
-  }) => {
-    const { length, width, height, weight, orderType, paymentType, routeType } = params;
-    // Volumetric weight = (L * B * H) / 5000
-    const volumetricWeight = (length * width * height) / 5000;
-    const chargeableWeight = Math.max(weight, volumetricWeight);
-
-    // Get rates
-    const baseRate = rateCard[routeType][orderType];
-    const surcharge = paymentType === 'COD' ? rateCard.codSurcharge[orderType] : 0;
-
-    const finalCharge = (chargeableWeight * baseRate) + surcharge;
-    return Math.round(finalCharge * 100) / 100;
-  };
-
-  // Create temporary/unconfirmed order, return object so user can review
-  const createOrder = (orderData: Omit<Order, 'id' | 'status' | 'timeline' | 'createdAt' | 'charge'>): Order => {
-    // Guess route type based on pickup and drop zone context (or default to intra-zone if not specified)
-    const routeType = orderData.zone.includes('Beta') && orderData.pickupAddress.includes('Alpha') ? 'interZone' : 'intraZone';
-
-    const charge = calculateCharge({
-      length: orderData.length,
-      width: orderData.width,
-      height: orderData.height,
-      weight: orderData.weight,
-      orderType: orderData.orderType,
-      paymentType: orderData.paymentType,
-      routeType
+  const getQuote = async (params: QuoteParams) => {
+    return api.quote({
+      lengthCm: params.length,
+      widthCm: params.width,
+      heightCm: params.height,
+      actualWeightKg: params.weight,
+      pickupPincode: params.pickupPincode,
+      dropPincode: params.dropPincode,
+      orderType: params.orderType,
+      paymentType: params.paymentType,
     });
-
-    const mockOrder: Order = {
-      ...orderData,
-      id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
-      status: 'Picked Up',
-      charge,
-      createdAt: new Date().toLocaleString(),
-      timeline: [
-        { status: 'Picked Up', timestamp: new Date().toLocaleString(), notes: 'Order created and ready for pick up.', actor: 'System: Order Created' }
-      ]
-    };
-
-    return mockOrder;
   };
 
-  // Confirm order to add it to state
-  const confirmOrder = (order: Order) => {
-    setOrders(prev => [order, ...prev]);
+  const createOrder = async (orderData: CreateOrderParams) => {
+    try {
+      const res = await api.createOrder({
+        pickupAddress: orderData.pickupAddress,
+        pickupPincode: orderData.pickupPincode,
+        dropAddress: orderData.dropAddress,
+        dropPincode: orderData.dropPincode,
+        lengthCm: orderData.length,
+        widthCm: orderData.width,
+        heightCm: orderData.height,
+        actualWeightKg: orderData.weight,
+        orderType: orderData.orderType,
+        paymentType: orderData.paymentType,
+        customerId: orderData.customerId,
+      });
+      const order = mapOrder(res.order);
+      setOrders((prev) => [order, ...prev]);
+      return { success: true, order };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to create order' };
+    }
   };
 
-  const updateOrderStatus = (orderId: string, status: DeliveryStatus, notes?: string) => {
-    setOrders(prev => prev.map(o => {
-      if (o.id === orderId) {
-        const timestamp = new Date().toLocaleString();
-        const defaultNotes: Record<DeliveryStatus, string> = {
-          'Picked Up': 'Package collection recorded.',
-          'In Transit': 'In transit to the nearest sorting hub.',
-          'Out for Delivery': 'Dispatched with delivery executive for final delivery.',
-          'Delivered': 'Package delivered and signed successfully.',
-          'Failed': 'Delivery attempt failed.'
-        };
-        const eventNotes = notes || defaultNotes[status];
-        return {
-          ...o,
-          status,
-          timeline: [
-            ...o.timeline,
-            { status, timestamp, notes: eventNotes, actor: currentUser ? `${currentUser.role}: ${currentUser.name}` : 'System' }
-          ]
-        };
-      }
-      return o;
-    }));
+  const updateOrderStatus = async (orderId: string, status: DeliveryStatus, notes?: string) => {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order) return { success: false, error: 'Order not found' };
+    try {
+      const res = await api.updateOrderStatus(order.dbId, status, notes);
+      const updated = mapOrder(res.order);
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? updated : o)));
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to update status' };
+    }
   };
 
-  const rescheduleDelivery = (orderId: string, date: string) => {
-    setOrders(prev => prev.map(o => {
-      if (o.id === orderId) {
-        const timestamp = new Date().toLocaleString();
-        return {
-          ...o,
-          status: 'Picked Up', // Resets back to Picked Up or In Transit to retry
-          scheduledDate: date,
-          timeline: [
-            ...o.timeline,
-            { status: 'Picked Up', timestamp, notes: `Delivery rescheduled for ${date}`, actor: currentUser ? `${currentUser.role}: ${currentUser.name}` : 'System' }
-          ]
-        };
-      }
-      return o;
-    }));
+  const rescheduleDelivery = async (orderId: string, date: string) => {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order) return { success: false, error: 'Order not found' };
+    try {
+      const res = await api.rescheduleOrder(order.dbId, date);
+      const updated = mapOrder(res.order);
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? updated : o)));
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to reschedule' };
+    }
   };
 
-  const addZone = (name: string, pincodes: string[]) => {
-    const newZone: Zone = {
-      id: `zone-${Date.now()}`,
-      name,
-      pincodes
-    };
-    setZones(prev => [...prev, newZone]);
+  const assignAgent = async (orderId: string, agentId?: string, auto?: boolean) => {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order) return { success: false, error: 'Order not found' };
+    try {
+      await api.assignOrder(order.dbId, auto ? { auto: true } : { agentId });
+      await refreshOrders();
+      await loadZonesAndAgents();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to assign agent' };
+    }
   };
 
-  const updateRateCard = (newRates: RateCard) => {
-    setRateCard(newRates);
+  const addZone = async (name: string, pincodes: string[]) => {
+    try {
+      await api.createZone(name, pincodes);
+      await loadZonesAndAgents();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to add zone' };
+    }
   };
 
-  const updateAgent = (agentId: string, updates: Partial<Agent>) => {
-    setAgents(prev => prev.map(a => a.id === agentId ? { ...a, ...updates } : a));
+  const updateRateCard = async (routeType: 'intraZone' | 'interZone', orderType: 'B2B' | 'B2C', rate: number) => {
+    try {
+      const backendRouteType = routeType === 'intraZone' ? 'intra_zone' : 'inter_zone';
+      await api.updateRateCard(backendRouteType, orderType, rate);
+      await loadRateCard();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to update rate card' };
+    }
+  };
+
+  const updateCodSurcharge = async (orderType: 'B2B' | 'B2C', surcharge: number) => {
+    try {
+      await api.updateCodSurcharge(orderType, surcharge);
+      await loadRateCard();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to update COD surcharge' };
+    }
+  };
+
+  const updateAgent = async (agentId: string, updates: { zoneId?: string; availability?: 'available' | 'busy' | 'offline' }) => {
+    try {
+      await api.updateAgent(agentId, updates);
+      await loadZonesAndAgents();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to update agent' };
+    }
   };
 
   return (
-    <AppContext.Provider value={{
-      currentUser,
-      orders,
-      zones,
-      rateCard,
-      agents,
-      users,
-      login,
-      register,
-      logout,
-      createOrder,
-      confirmOrder,
-      updateOrderStatus,
-      rescheduleDelivery,
-      addZone,
-      updateRateCard,
-      updateAgent,
-      calculateCharge
-    }}>
+    <AppContext.Provider
+      value={{
+        currentUser,
+        isLoading,
+        orders,
+        zones,
+        rateCard,
+        agents,
+        customers,
+        login,
+        register,
+        logout,
+        refreshOrders,
+        getQuote,
+        createOrder,
+        updateOrderStatus,
+        rescheduleDelivery,
+        assignAgent,
+        addZone,
+        updateRateCard,
+        updateCodSurcharge,
+        updateAgent,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

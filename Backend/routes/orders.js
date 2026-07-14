@@ -12,6 +12,18 @@ function generateOrderCode() {
   return `LMD-${n}`;
 }
 
+const ORDER_JOIN_SELECT = `
+  SELECT o.*, pz.name as pickup_zone_name, dz.name as drop_zone_name,
+         u.name as customer_name, u.email as customer_email, u.phone as customer_phone,
+         au.name as agent_name
+  FROM orders o
+  LEFT JOIN zones pz ON pz.id = o.pickup_zone_id
+  LEFT JOIN zones dz ON dz.id = o.drop_zone_id
+  LEFT JOIN users u ON u.id = o.customer_id
+  LEFT JOIN agents a ON a.id = o.assigned_agent_id
+  LEFT JOIN users au ON au.id = a.user_id
+`;
+
 /**
  * POST /orders/quote
  * Calculates the charge WITHOUT creating an order. This powers
@@ -92,7 +104,12 @@ router.post("/", requireAuth, requireRole("customer", "admin"), (req, res) => {
     VALUES (?, 'Created', 'Order created and awaiting pickup assignment.', ?, ?)
   `).run(orderId, req.user.id, `${req.user.role === "admin" ? "Admin" : "Customer"}: ${req.user.name}`);
 
-  const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(orderId);
+  const order = db.prepare(`${ORDER_JOIN_SELECT} WHERE o.id = ?`).get(orderId);
+  const timeline = db
+    .prepare("SELECT * FROM order_status_history WHERE order_id = ? ORDER BY timestamp ASC, id ASC")
+    .all(orderId);
+  order.timeline = timeline;
+
   res.status(201).json({ order, quote });
 });
 
@@ -100,21 +117,12 @@ router.post("/", requireAuth, requireRole("customer", "admin"), (req, res) => {
  * GET /orders
  * Role-scoped list: customer sees own orders, agent sees assigned orders,
  * admin sees everything with optional filters (status, zone, agent).
+ * Each order includes its full immutable timeline embedded.
  */
 router.get("/", requireAuth, (req, res) => {
   const { status, zoneId, agentId } = req.query;
 
-  let query = `
-    SELECT o.*, pz.name as pickup_zone_name, dz.name as drop_zone_name,
-           u.name as customer_name, a.id as agent_row_id, au.name as agent_name
-    FROM orders o
-    LEFT JOIN zones pz ON pz.id = o.pickup_zone_id
-    LEFT JOIN zones dz ON dz.id = o.drop_zone_id
-    LEFT JOIN users u ON u.id = o.customer_id
-    LEFT JOIN agents a ON a.id = o.assigned_agent_id
-    LEFT JOIN users au ON au.id = a.user_id
-    WHERE 1=1
-  `;
+  let query = `${ORDER_JOIN_SELECT} WHERE 1=1`;
   const params = [];
 
   if (req.user.role === "customer") {
@@ -143,6 +151,23 @@ router.get("/", requireAuth, (req, res) => {
   query += " ORDER BY o.created_at DESC";
 
   const orders = db.prepare(query).all(...params);
+
+  if (orders.length > 0) {
+    const ids = orders.map((o) => o.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const historyRows = db
+      .prepare(`SELECT * FROM order_status_history WHERE order_id IN (${placeholders}) ORDER BY timestamp ASC, id ASC`)
+      .all(...ids);
+    const historyByOrder = {};
+    historyRows.forEach((h) => {
+      if (!historyByOrder[h.order_id]) historyByOrder[h.order_id] = [];
+      historyByOrder[h.order_id].push(h);
+    });
+    orders.forEach((o) => {
+      o.timeline = historyByOrder[o.id] || [];
+    });
+  }
+
   res.json({ orders });
 });
 
@@ -151,7 +176,7 @@ router.get("/", requireAuth, (req, res) => {
  * Full order detail + immutable status history timeline.
  */
 router.get("/:id", requireAuth, (req, res) => {
-  const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(req.params.id);
+  const order = db.prepare(`${ORDER_JOIN_SELECT} WHERE o.id = ?`).get(req.params.id);
   if (!order) return res.status(404).json({ error: "Order not found" });
 
   // Access control: customers can only see their own orders
@@ -258,7 +283,12 @@ router.patch("/:id/status", requireAuth, requireRole("agent", "admin"), async (r
     orderCode: order.order_code, status, notes,
   });
 
-  const updatedOrder = db.prepare("SELECT * FROM orders WHERE id = ?").get(order.id);
+  const updatedOrder = db.prepare(`${ORDER_JOIN_SELECT} WHERE o.id = ?`).get(order.id);
+  const timeline = db
+    .prepare("SELECT * FROM order_status_history WHERE order_id = ? ORDER BY timestamp ASC, id ASC")
+    .all(order.id);
+  updatedOrder.timeline = timeline;
+
   res.json({ order: updatedOrder });
 });
 
@@ -296,7 +326,12 @@ router.post("/:id/reschedule", requireAuth, requireRole("customer"), async (req,
     notes: `Rescheduled for ${date}.`,
   });
 
-  const updatedOrder = db.prepare("SELECT * FROM orders WHERE id = ?").get(order.id);
+  const updatedOrder = db.prepare(`${ORDER_JOIN_SELECT} WHERE o.id = ?`).get(order.id);
+  const timeline = db
+    .prepare("SELECT * FROM order_status_history WHERE order_id = ? ORDER BY timestamp ASC, id ASC")
+    .all(order.id);
+  updatedOrder.timeline = timeline;
+
   res.json({ order: updatedOrder, reassignedAgent: assignResult.agent });
 });
 

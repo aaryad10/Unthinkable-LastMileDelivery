@@ -10,54 +10,58 @@ interface AuthViewProps {
 export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, id }) => {
   const { login, register } = useApp();
   const [isLogin, setIsLogin] = useState(true);
-  const [role, setRole] = useState<'Customer' | 'Delivery Agent' | 'Admin'>('Customer');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
 
-    if (!email) {
-      setError('Email address is required.');
+    if (!email || !password) {
+      setError('Email and password are required.');
       return;
     }
 
+    setIsSubmitting(true);
+
     if (isLogin) {
-      // Allow any email for mock testing
-      const success = login(email, role);
-      if (success) {
+      const result = await login(email, password);
+      setIsSubmitting(false);
+      if (result.success) {
         onSuccess();
       } else {
-        setError('Invalid credentials or role mismatch.');
+        setError(result.error || 'Invalid email or password.');
       }
     } else {
       if (!name || !phone) {
         setError('Please fill in all registration fields.');
+        setIsSubmitting(false);
         return;
       }
-      const success = register(name, email, phone);
-      if (success) {
+      const result = await register(name, email, password, phone);
+      setIsSubmitting(false);
+      if (result.success) {
         setSuccessMsg('Registration successful! Logging you in...');
         setTimeout(() => {
           onSuccess();
         }, 1200);
       } else {
-        setError('This email address is already registered.');
+        setError(result.error || 'This email address is already registered.');
       }
     }
   };
 
-  const handlePreFill = (demoEmail: string, demoRole: 'Customer' | 'Delivery Agent' | 'Admin') => {
+  const handlePreFill = (demoEmail: string, demoPassword: string) => {
     setEmail(demoEmail);
-    setPassword('••••••••');
-    setRole(demoRole);
+    setPassword(demoPassword);
     setIsLogin(true);
+    setError('');
   };
 
   return (
@@ -142,7 +146,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, id }) => {
                       required
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      placeholder="+1 (555) 0122"
+                      placeholder="+91 98220 00000"
                       className="block w-full pl-10 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
@@ -188,32 +192,13 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, id }) => {
               </div>
             </div>
 
-            {isLogin && (
-              <div>
-                <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-2">
-                  Role Selector
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {(['Customer', 'Delivery Agent', 'Admin'] as const).map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => setRole(r)}
-                      className={`py-2 px-1 text-xs font-medium border rounded-lg transition ${role === r ? 'bg-blue-50 text-blue-700 border-blue-300 ring-2 ring-blue-500/20' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
-                    >
-                      {r === 'Delivery Agent' ? 'Agent' : r}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
             <button
               type="submit"
-              className="w-full flex justify-center items-center gap-1.5 py-2.5 px-4 border border-transparent rounded-lg shadow-xs text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition active:scale-98"
+              disabled={isSubmitting}
+              className="w-full flex justify-center items-center gap-1.5 py-2.5 px-4 border border-transparent rounded-lg shadow-xs text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition active:scale-98 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {isLogin ? 'Sign In to Tracker' : 'Register Customer Profile'}
-              <ArrowRight className="w-4 h-4" />
+              {isSubmitting ? 'Please wait...' : isLogin ? 'Sign In to Tracker' : 'Register Customer Profile'}
+              {!isSubmitting && <ArrowRight className="w-4 h-4" />}
             </button>
           </form>
 
@@ -225,32 +210,35 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, id }) => {
               </span>
               <div className="space-y-2">
                 <button
-                  onClick={() => handlePreFill('customer@tracker.com', 'Customer')}
+                  type="button"
+                  onClick={() => handlePreFill('customer@gmail.com', 'Customer@123')}
                   className="w-full flex items-center justify-between text-left p-2 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition text-xs text-slate-600 group"
                 >
                   <div>
                     <span className="font-semibold block text-slate-800">Test Customer Profile</span>
-                    <span>customer@tracker.com</span>
+                    <span>customer@gmail.com</span>
                   </div>
                   <UserCheck className="w-4 h-4 text-slate-400 group-hover:text-blue-500" />
                 </button>
                 <button
-                  onClick={() => handlePreFill('agent1@tracker.com', 'Delivery Agent')}
+                  type="button"
+                  onClick={() => handlePreFill('agent1@gmail.com', 'Agent1')}
                   className="w-full flex items-center justify-between text-left p-2 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition text-xs text-slate-600 group"
                 >
                   <div>
-                    <span className="font-semibold block text-slate-800">Test Agent Profile (Robert Chen)</span>
-                    <span>agent1@tracker.com</span>
+                    <span className="font-semibold block text-slate-800">Test Agent Profile (Rohan Kulkarni)</span>
+                    <span>agent1@gmail.com</span>
                   </div>
                   <UserCheck className="w-4 h-4 text-slate-400 group-hover:text-blue-500" />
                 </button>
                 <button
-                  onClick={() => handlePreFill('admin@tracker.com', 'Admin')}
+                  type="button"
+                  onClick={() => handlePreFill('admin@gmail.com', 'Admin@123')}
                   className="w-full flex items-center justify-between text-left p-2 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition text-xs text-slate-600 group"
                 >
                   <div>
                     <span className="font-semibold block text-slate-800">Test Admin Control Room</span>
-                    <span>admin@tracker.com</span>
+                    <span>admin@gmail.com</span>
                   </div>
                   <UserCheck className="w-4 h-4 text-slate-400 group-hover:text-blue-500" />
                 </button>

@@ -10,6 +10,11 @@ interface StatusBadgeProps {
 export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, className = '', id }) => {
   const getColors = (status: DeliveryStatus) => {
     switch (status) {
+      case 'Created':
+        return {
+          bg: 'bg-slate-50/80 text-slate-700 border-slate-200 dark:bg-slate-900/20 dark:text-slate-300 dark:border-slate-700',
+          dot: 'bg-slate-400'
+        };
       case 'Picked Up':
         return {
           bg: 'bg-amber-50/80 text-amber-800 border-amber-200 dark:bg-amber-950/20 dark:text-amber-300 dark:border-amber-800',

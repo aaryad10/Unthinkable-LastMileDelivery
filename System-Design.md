@@ -1,0 +1,25 @@
+# System Design Write-Up — Last-Mile Delivery Tracker
+
+## Rate Calculation Engine
+
+The rate engine (`services/rateEngine.js`) is a pure, admin-configurable function that computes a shipping charge from six inputs: package dimensions, actual weight, pickup/drop pincodes, order type (B2B/B2C), and payment type (Prepaid/COD). Nothing about pricing is hardcoded — every number the engine touches (rate per kg, COD surcharge) is read live from the database, so an admin changing a rate card takes effect on the very next quote with no deploy.
+
+The calculation runs in five deterministic steps: detect the pickup and drop zones from their pincodes; classify the route as `intra_zone` (same zone) or `inter_zone` (different zones); compute volumetric weight as `(L × B × H) / 5000`; take the chargeable weight as `max(actual, volumetric)`, which protects the business against underbilling bulky-but-light packages; and finally look up the correct rate from `rate_cards` using the `(route_type, order_type)` pair and add a COD surcharge from `cod_surcharge` if applicable.
+
+Two design choices matter here. First, the engine is a **standalone function** used identically by both `POST /orders/quote` (a dry-run price) and `POST /orders` (the actual booking), so the confirmed charge can never drift from the quoted charge — one code path computes price, not two that could fall out of sync. Second, missing configuration fails loudly: an unmapped pincode throws `ZONE_NOT_FOUND` and a missing rate card throws `RATE_CARD_NOT_FOUND`, surfaced to the admin rather than silently defaulting to zero. In a billing engine, a loud failure is safer than a wrong number.
+
+## Zone Detection Approach
+
+Zones are modeled as a two-table structure: `zones` (id, name) and `zone_areas` (a many-to-one mapping of pincode → zone, with a `UNIQUE` constraint on pincode so one area can never belong to two zones at once). Detecting a package's zone is a single indexed lookup by pincode — no geocoding, no distance math, no external API dependency, so it's instant and free of third-party cost or latency, at the cost of requiring an admin to explicitly map every serviceable pincode ahead of time. That tradeoff is intentional: logistics companies already operate with fixed, admin-defined service areas rather than open-ended geography, and it keeps the rate engine's zone lookup and the agent-assignment zone lookup sharing one source of truth.
+
+## Auto-Assignment Logic
+
+The brief calls for assigning the "nearest available agent based on current location or zone." Without live GPS tracking of agents, this system uses **zone membership as the locality proxy**, on the reasoning that zones are already drawn along real geographic boundaries, so an agent whose home zone matches the order's pickup zone is a reasonable stand-in for "nearby" without needing a mapping/geolocation service.
+
+The algorithm (`services/assignmentEngine.js`) runs two passes: first, look for an `available` agent whose `zone_id` matches the order's pickup zone, ordered deterministically by agent id; if none exists, fall back to *any* available agent platform-wide, on the principle that a late delivery from an out-of-zone agent beats no assignment at all. If no agent is available anywhere, the order is left unassigned and surfaced to the admin. Each match is tagged with a `matchType` (`same_zone` or `out_of_zone_fallback`) that gets written into the order's status history, so an admin reviewing the timeline can immediately see when the system had to reach outside the ideal zone.
+
+Agent state is a simple three-value machine — `available`, `busy`, `offline` — updated at two points: an agent flips to `busy` the moment they're assigned an order, and flips back to `available` automatically when that order reaches a terminal state (`Delivered` or `Failed`). This means the assignment pool is always self-correcting without any manual admin bookkeeping.
+
+## Failed Delivery Handling
+
+A `Failed` status is just another value in the order's status enum, but it triggers a distinct customer-facing path. On marking an order `Failed`, the customer is emailed immediately with an explanation and pointed to their tracking page to reschedule. The reschedule endpoint (`POST /orders/:id/reschedule`) is gated so it only accepts orders currently in `Failed` status, requires a new date, and on success: updates the order back into an active state, appends a new immutable history row noting the reschedule and new date, re-runs the **same auto-assignment logic** used for fresh orders to find an agent for the new attempt (which correctly frees up the pool if the original agent is no longer needed), and sends a fresh status email. Because every step — the failure, the reschedule, and the reassignment — is logged as its own row in `order_status_history` with a timestamp and actor, the full failure-to-recovery story for an order is reconstructable from the timeline alone, satisfying the immutable-audit-trail requirement even for the most complex path in the order lifecycle.

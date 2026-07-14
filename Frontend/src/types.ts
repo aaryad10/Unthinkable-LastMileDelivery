@@ -1,4 +1,4 @@
-export type DeliveryStatus = 'Picked Up' | 'In Transit' | 'Out for Delivery' | 'Delivered' | 'Failed';
+export type DeliveryStatus = 'Created' | 'Picked Up' | 'In Transit' | 'Out for Delivery' | 'Delivered' | 'Failed';
 
 export interface TimelineEvent {
   status: DeliveryStatus;
@@ -8,7 +8,8 @@ export interface TimelineEvent {
 }
 
 export interface Order {
-  id: string;
+  id: string; // display order code, e.g. "LMD-100001"
+  dbId: number; // real backend order id, used for API calls
   customerName: string;
   customerEmail: string;
   customerPhone: string;
