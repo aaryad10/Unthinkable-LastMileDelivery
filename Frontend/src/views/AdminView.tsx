@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { Order, DeliveryStatus, Zone, RateCard, Agent, User } from '../types';
+import { DeliveryStatus } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { OrderCard } from '../components/OrderCard';
 import {
-  Package, Map, DollarSign, Users, ShieldAlert, PlusCircle, Trash, Check, HelpCircle, RefreshCw, Edit, Save, ToggleLeft, ToggleRight, Search, MapPin, Calculator, Info, ShieldCheck, Mail, Phone, Calendar, CheckCircle
+  Package, Map, DollarSign, Users, ShieldAlert, PlusCircle, Trash, Check, HelpCircle, RefreshCw, Edit, Save, ToggleLeft, ToggleRight, Search, MapPin, Calculator, Info, ShieldCheck, Mail, Phone, Calendar, CheckCircle, UserPlus
 } from 'lucide-react';
 
 interface AdminViewProps {
@@ -32,7 +32,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
 }) => {
   const {
     orders, zones, rateCard, agents, customers,
-    addZone, updateRateCard, updateAgent, updateOrderStatus, createOrder, getQuote
+    addZone, updateRateCard, updateCodSurcharge, updateAgent, addAgent,
+    updateOrderStatus, createOrder, getQuote
   } = useApp();
 
   // Search/Filters
@@ -42,7 +43,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [filterAgent, setFilterAgent] = useState<string>('All');
 
   // Order Booking (Same as customer, plus customer picker)
-  const [selectedCustomerId, setSelectedCustomerId] = useState(customers[0]?.id || '');
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [pickupAddress, setPickupAddress] = useState('');
   const [pickupPincode, setPickupPincode] = useState('');
   const [dropAddress, setDropAddress] = useState('');
@@ -58,10 +59,19 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [isConfirming, setIsConfirming] = useState(false);
   const [formError, setFormError] = useState('');
 
+  // Default the customer picker to the first loaded customer once
+  // `customers` actually arrives (it loads async on mount).
+  useEffect(() => {
+    if (!selectedCustomerId && customers.length > 0) {
+      setSelectedCustomerId(customers[0].id);
+    }
+  }, [customers, selectedCustomerId]);
+
   // Zone Management State
   const [newZoneName, setNewZoneName] = useState('');
   const [newZonePincodes, setNewZonePincodes] = useState('');
   const [zoneError, setZoneError] = useState('');
+  const [isSavingZone, setIsSavingZone] = useState(false);
 
   // Rate Card State
   const [intraB2B, setIntraB2B] = useState(rateCard.intraZone.B2B);
@@ -71,6 +81,28 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [codSurchargeB2B, setCodSurchargeB2B] = useState(rateCard.codSurcharge.B2B);
   const [codSurchargeB2C, setCodSurchargeB2C] = useState(rateCard.codSurcharge.B2C);
   const [rateSuccess, setRateSuccess] = useState(false);
+  const [rateError, setRateError] = useState('');
+  const [isSavingRates, setIsSavingRates] = useState(false);
+
+  // Keep the rate card inputs in sync once the real values load async
+  useEffect(() => {
+    setIntraB2B(rateCard.intraZone.B2B);
+    setIntraB2C(rateCard.intraZone.B2C);
+    setInterB2B(rateCard.interZone.B2B);
+    setInterB2C(rateCard.interZone.B2C);
+    setCodSurchargeB2B(rateCard.codSurcharge.B2B);
+    setCodSurchargeB2C(rateCard.codSurcharge.B2C);
+  }, [rateCard]);
+
+  // Agent Onboarding State
+  const [newAgentName, setNewAgentName] = useState('');
+  const [newAgentEmail, setNewAgentEmail] = useState('');
+  const [newAgentPassword, setNewAgentPassword] = useState('');
+  const [newAgentPhone, setNewAgentPhone] = useState('');
+  const [newAgentZoneId, setNewAgentZoneId] = useState('');
+  const [agentFormError, setAgentFormError] = useState('');
+  const [isAddingAgent, setIsAddingAgent] = useState(false);
+  const [orderActionError, setOrderActionError] = useState('');
 
   // Filter Orders for table
   const filteredOrders = orders.filter(o => {
@@ -80,7 +112,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
     const matchesStatus = filterStatus === 'All' || o.status === filterStatus;
     const matchesZone = filterZone === 'All' || o.zone === filterZone;
     
-    // Agent filter logic
     let matchesAgent = true;
     if (filterAgent !== 'All') {
       matchesAgent = o.assignedAgentId === filterAgent;
@@ -142,7 +173,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setIsConfirming(false);
 
     if (result.success) {
-      // Reset Form fields
       setPickupAddress('');
       setPickupPincode('');
       setDropAddress('');
@@ -153,8 +183,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
       setWeight(1.5);
       setQuote(null);
       setFormError('');
-
-      // Go back to Dashboard Control Center
       setActiveTab('dashboard');
     } else {
       setFormError(result.error || 'Failed to confirm booking. Please try again.');
@@ -162,7 +190,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   };
 
   // Handle Zone Creation
-  const handleCreateZone = (e: React.FormEvent) => {
+  const handleCreateZone = async (e: React.FormEvent) => {
     e.preventDefault();
     setZoneError('');
 
@@ -171,31 +199,103 @@ export const AdminView: React.FC<AdminViewProps> = ({
       return;
     }
 
-    // Split pincodes by commas and trim whitespace
     const codes = newZonePincodes.split(',').map(c => c.trim()).filter(c => c.length > 0);
     if (codes.length === 0) {
       setZoneError('Please enter at least one valid pincode.');
       return;
     }
 
-    addZone(newZoneName.trim(), codes);
-    setNewZoneName('');
-    setNewZonePincodes('');
+    setIsSavingZone(true);
+    const result = await addZone(newZoneName.trim(), codes);
+    setIsSavingZone(false);
+
+    if (result.success) {
+      setNewZoneName('');
+      setNewZonePincodes('');
+    } else {
+      setZoneError(result.error || 'Failed to create zone.');
+    }
   };
 
-  // Handle Rate Card Update
-  const handleRateCardSave = (e: React.FormEvent) => {
+  // Handle Rate Card Update - each of the 6 values is its own backend row,
+  // so we fire all 6 updates in parallel and report if any failed.
+  const handleRateCardSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setRateSuccess(false);
+    setRateError('');
+    setIsSavingRates(true);
 
-    updateRateCard({
-      intraZone: { B2B: Number(intraB2B), B2C: Number(intraB2C) },
-      interZone: { B2B: Number(interB2B), B2C: Number(interB2C) },
-      codSurcharge: { B2B: Number(codSurchargeB2B), B2C: Number(codSurchargeB2C) }
-    });
+    const results = await Promise.all([
+      updateRateCard('intraZone', 'B2B', Number(intraB2B)),
+      updateRateCard('intraZone', 'B2C', Number(intraB2C)),
+      updateRateCard('interZone', 'B2B', Number(interB2B)),
+      updateRateCard('interZone', 'B2C', Number(interB2C)),
+      updateCodSurcharge('B2B', Number(codSurchargeB2B)),
+      updateCodSurcharge('B2C', Number(codSurchargeB2C)),
+    ]);
 
-    setRateSuccess(true);
-    setTimeout(() => setRateSuccess(false), 2000);
+    setIsSavingRates(false);
+
+    const failed = results.find(r => !r.success);
+    if (failed) {
+      setRateError(failed.error || 'Some rate updates failed. Please try again.');
+    } else {
+      setRateSuccess(true);
+      setTimeout(() => setRateSuccess(false), 2000);
+    }
+  };
+
+  // Admin status override
+  const handleStatusOverride = async (orderId: string, newStatus: DeliveryStatus) => {
+    setOrderActionError('');
+    const result = await updateOrderStatus(orderId, newStatus, 'Manual status override by Control Room Admin.');
+    if (!result.success) {
+      setOrderActionError(result.error || 'Failed to override status.');
+    }
+  };
+
+  // Agent zone reassignment - the select stores a zone name (for display),
+  // so we resolve it back to the zone id the backend expects.
+  const handleAgentZoneChange = (agentId: string, zoneName: string) => {
+    const zone = zones.find(z => z.name === zoneName);
+    if (zone) {
+      updateAgent(agentId, { zoneId: zone.id });
+    }
+  };
+
+  const handleAgentAvailabilityToggle = (agentId: string, currentStatus: 'available' | 'busy') => {
+    updateAgent(agentId, { availability: currentStatus === 'available' ? 'busy' : 'available' });
+  };
+
+  // Onboard a brand new delivery agent
+  const handleAddAgent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAgentFormError('');
+
+    if (!newAgentName.trim() || !newAgentEmail.trim() || !newAgentPassword.trim()) {
+      setAgentFormError('Name, email, and password are required.');
+      return;
+    }
+
+    setIsAddingAgent(true);
+    const result = await addAgent(
+      newAgentName.trim(),
+      newAgentEmail.trim(),
+      newAgentPassword.trim(),
+      newAgentPhone.trim(),
+      newAgentZoneId || undefined
+    );
+    setIsAddingAgent(false);
+
+    if (result.success) {
+      setNewAgentName('');
+      setNewAgentEmail('');
+      setNewAgentPassword('');
+      setNewAgentPhone('');
+      setNewAgentZoneId('');
+    } else {
+      setAgentFormError(result.error || 'Failed to onboard agent.');
+    }
   };
 
   return (
@@ -215,7 +315,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Platform Total</p>
                 <div className="flex items-baseline space-x-2">
                   <span className="text-2xl font-bold text-slate-800">{totalDeliveries}</span>
-                  <span className="text-[10px] font-bold text-emerald-600">+12%</span>
                 </div>
               </div>
             </div>
@@ -241,7 +340,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Delivered Success</p>
                 <div className="flex items-baseline space-x-2">
                   <span className="text-2xl font-bold text-slate-800">{completedCount}</span>
-                  <span className="text-[10px] font-bold text-emerald-600">Success</span>
                 </div>
               </div>
             </div>
@@ -254,11 +352,16 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Failed Attempts</p>
                 <div className="flex items-baseline space-x-2">
                   <span className="text-2xl font-bold text-slate-800">{failureCount}</span>
-                  <span className="text-[10px] font-bold text-rose-600 font-mono">Critical</span>
                 </div>
               </div>
             </div>
           </div>
+
+          {orderActionError && (
+            <div className="p-3 bg-rose-50 border border-rose-100 text-rose-800 text-xs rounded-lg font-medium">
+              {orderActionError}
+            </div>
+          )}
 
           {/* Filtering and Search Controls */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">
@@ -274,7 +377,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 />
               </div>
 
-              {/* Action dispatcher shortcut */}
               <button
                 onClick={() => setActiveTab('create')}
                 className="w-full lg:w-auto flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition active:scale-95 whitespace-nowrap shadow-sm"
@@ -284,7 +386,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
               </button>
             </div>
 
-            {/* Structured filters */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-slate-100 text-xs">
               <div>
                 <span className="block text-[10px] font-bold text-slate-400 uppercase mb-1">FILTER STATUS</span>
@@ -294,6 +395,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   className="w-full border border-slate-200 rounded p-2 text-xs bg-slate-50 focus:outline-hidden text-slate-700"
                 >
                   <option value="All">All Statuses</option>
+                  <option value="Created">Created</option>
                   <option value="Picked Up">Picked Up</option>
                   <option value="In Transit">In Transit</option>
                   <option value="Out for Delivery">Out for Delivery</option>
@@ -371,19 +473,19 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         <span className="text-[10px] text-slate-400 block font-mono">{ord.zone}</span>
                       </td>
                       <td className="py-3.5 px-4 font-mono font-bold text-slate-900">
-                        ${ord.charge.toFixed(2)}
+                        Rs.{ord.charge.toFixed(2)}
                         <span className="text-[9px] text-slate-400 font-normal block">{ord.paymentType}</span>
                       </td>
                       <td className="py-3.5 px-4 font-medium">
                         {agents.find(a => a.id === ord.assignedAgentId)?.name || 'Unassigned'}
                       </td>
                       <td className="py-3.5 px-4">
-                        {/* Status Manual Override Dropdown */}
                         <select
                           value={ord.status}
-                          onChange={(e) => updateOrderStatus(ord.id, e.target.value as DeliveryStatus, `Manual Status Override by Control Room Admin.`)}
+                          onChange={(e) => handleStatusOverride(ord.id, e.target.value as DeliveryStatus)}
                           className="border border-slate-200 rounded-md p-1 bg-white font-medium text-xs text-slate-700 focus:outline-hidden focus:border-blue-500 cursor-pointer"
                         >
+                          <option value="Created">Created</option>
                           <option value="Picked Up">Picked Up</option>
                           <option value="In Transit">In Transit</option>
                           <option value="Out for Delivery">Out for Delivery</option>
@@ -411,7 +513,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
       {activeTab === 'create' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-fade-in">
           
-          {/* Input Form */}
           <div className="lg:col-span-7 bg-white rounded-xl border border-slate-100 p-6 shadow-xs">
             <h2 className="text-lg font-bold text-slate-800 mb-2">Book Order on Behalf of Client</h2>
             <p className="text-xs text-slate-500 mb-6">Select from registered users and configure coordinates to dispatch last-mile couriers.</p>
@@ -423,7 +524,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
             )}
 
             <form onSubmit={handleAdminDispatchSubmit} className="space-y-4">
-              {/* Customer Selector */}
               <div>
                 <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
                   Select Registered Customer
@@ -433,6 +533,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   onChange={(e) => setSelectedCustomerId(e.target.value)}
                   className="block w-full text-sm border border-slate-200 rounded-lg p-2.5 bg-white focus:outline-hidden focus:border-blue-500"
                 >
+                  {customers.length === 0 && <option value="">No customers loaded yet</option>}
                   {customers.map(cust => (
                     <option key={cust.id} value={cust.id}>
                       {cust.name} ({cust.email})
@@ -463,7 +564,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </div>
               </div>
 
-              {/* Addresses + Pincodes (pincodes drive server-side zone detection) */}
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <div className="sm:col-span-2">
@@ -523,7 +623,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </div>
               </div>
 
-              {/* Dimensions */}
               <div>
                 <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
                   Package dimensions (cm) & weight (kg)
@@ -573,7 +672,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </div>
               </div>
 
-              {/* Payment selection */}
               <div>
                 <label className="block text-xs font-mono font-bold uppercase tracking-wider text-slate-500 mb-1.5">
                   Payment Profile
@@ -607,7 +705,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </form>
           </div>
 
-          {/* Pricing Preview Summary Card */}
           <div className="lg:col-span-5 space-y-6">
             <div className="bg-slate-900 text-white rounded-xl p-6 border border-slate-800 shadow-sm">
               <h3 className="text-sm font-mono font-bold text-slate-400 tracking-widest uppercase mb-4">Calculated Invoice</h3>
@@ -624,7 +721,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div>
                     <span className="text-[10px] font-mono text-slate-500 block">COURIER SECTOR</span>
                     <span className="text-xs font-mono text-slate-300 block">
-                      {quote.pickupZone.name} → {quote.dropZone.name} ({quote.routeType === 'intra_zone' ? 'Intra-zone' : 'Inter-zone'})
+                      {quote.pickupZone.name} &rarr; {quote.dropZone.name} ({quote.routeType === 'intra_zone' ? 'Intra-zone' : 'Inter-zone'})
                     </span>
                   </div>
 
@@ -634,19 +731,19 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       <span>{quote.chargeableWeightKg.toFixed(2)} kg (vol: {quote.volumetricWeightKg.toFixed(2)} kg)</span>
                     </div>
                     <div className="flex justify-between text-slate-400">
-                      <span>Base route cost ({orderType} @ ${quote.ratePerKg}/kg)</span>
-                      <span>${quote.baseCharge.toFixed(2)}</span>
+                      <span>Base route cost ({orderType} @ Rs.{quote.ratePerKg}/kg)</span>
+                      <span>Rs.{quote.baseCharge.toFixed(2)}</span>
                     </div>
                     {paymentType === 'COD' && (
                       <div className="flex justify-between text-amber-400 font-medium">
                         <span>COD Cash Handling Surcharge</span>
-                        <span>+${quote.codSurcharge.toFixed(2)}</span>
+                        <span>+Rs.{quote.codSurcharge.toFixed(2)}</span>
                       </div>
                     )}
 
                     <div className="flex justify-between text-md pt-3 border-t border-dashed border-slate-800 font-semibold text-white">
                       <span>Platform total cost</span>
-                      <span className="text-lg text-blue-400 font-bold">${quote.totalCharge.toFixed(2)}</span>
+                      <span className="text-lg text-blue-400 font-bold">Rs.{quote.totalCharge.toFixed(2)}</span>
                     </div>
                   </div>
 
@@ -682,7 +779,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
       {activeTab === 'zones' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-fade-in">
           
-          {/* Create new Zone Form */}
           <div className="lg:col-span-5 bg-white rounded-xl border border-slate-100 p-6 shadow-xs h-fit">
             <h2 className="text-md font-bold text-slate-800 mb-1 flex items-center gap-2">
               <Map className="w-5 h-5 text-blue-600" />
@@ -719,7 +815,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   required
                   value={newZonePincodes}
                   onChange={(e) => setNewZonePincodes(e.target.value)}
-                  placeholder="100084, 100085, 100086"
+                  placeholder="411061, 411062, 411063"
                   rows={3}
                   className="block w-full text-xs border border-slate-200 rounded-lg p-2.5 resize-none bg-slate-50 focus:outline-hidden focus:bg-white"
                 />
@@ -730,14 +826,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
               <button
                 type="submit"
-                className="w-full py-2 px-4 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold transition"
+                disabled={isSavingZone}
+                className="w-full py-2 px-4 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white rounded-lg text-xs font-semibold transition"
               >
-                Add Active Service Sector
+                {isSavingZone ? 'Saving...' : 'Add Active Service Sector'}
               </button>
             </form>
           </div>
 
-          {/* Zones list */}
           <div className="lg:col-span-7 bg-white rounded-xl border border-slate-100 shadow-xs p-6">
             <h3 className="text-sm font-bold text-slate-800 font-mono tracking-wider uppercase mb-4">Platform Covered Sectors</h3>
             
@@ -777,7 +873,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <DollarSign className="w-5 h-5 text-blue-600" />
                 Configure Platform Rate Cards
               </h2>
-              <p className="text-xs text-slate-500 mt-1">Configure pricing tiers in USD ($) charged per chargeable kilogram weight.</p>
+              <p className="text-xs text-slate-500 mt-1">Configure pricing tiers in Rupees (Rs.) charged per chargeable kilogram weight.</p>
             </div>
           </div>
 
@@ -788,10 +884,15 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           )}
 
+          {rateError && (
+            <div className="p-3 bg-rose-50 border border-rose-100 text-rose-800 text-xs rounded-lg font-medium mb-5">
+              {rateError}
+            </div>
+          )}
+
           <form onSubmit={handleRateCardSave} className="space-y-6">
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Intra Zone Pricing Card */}
               <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 space-y-4">
                 <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-slate-500 block">A) INTRA-ZONE TARIFFS (Same Zone)</span>
                 <p className="text-[11px] text-slate-400">Rates applied to collection and drop points mapping to identical sectors.</p>
@@ -800,14 +901,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div>
                     <label className="block text-xs font-medium text-slate-600">B2B Base (per kg)</label>
                     <div className="mt-1 relative rounded-md shadow-xs">
-                      <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">$</span>
+                      <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">Rs.</span>
                       <input
                         type="number"
                         step="0.5"
                         required
                         value={intraB2B}
                         onChange={(e) => setIntraB2B(parseFloat(e.target.value) || 0)}
-                        className="block w-full pl-6 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
+                        className="block w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
                       />
                     </div>
                   </div>
@@ -815,21 +916,20 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div>
                     <label className="block text-xs font-medium text-slate-600">B2C Base (per kg)</label>
                     <div className="mt-1 relative rounded-md shadow-xs">
-                      <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">$</span>
+                      <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">Rs.</span>
                       <input
                         type="number"
                         step="0.5"
                         required
                         value={intraB2C}
                         onChange={(e) => setIntraB2C(parseFloat(e.target.value) || 0)}
-                        className="block w-full pl-6 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
+                        className="block w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
                       />
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Inter Zone Pricing Card */}
               <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 space-y-4">
                 <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-slate-500 block">B) INTER-ZONE TARIFFS (Cross Zone)</span>
                 <p className="text-[11px] text-slate-400">Rates applied to collection and drop points spanning separate zones.</p>
@@ -838,14 +938,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div>
                     <label className="block text-xs font-medium text-slate-600">B2B Base (per kg)</label>
                     <div className="mt-1 relative rounded-md shadow-xs">
-                      <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">$</span>
+                      <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">Rs.</span>
                       <input
                         type="number"
                         step="0.5"
                         required
                         value={interB2B}
                         onChange={(e) => setInterB2B(parseFloat(e.target.value) || 0)}
-                        className="block w-full pl-6 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
+                        className="block w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
                       />
                     </div>
                   </div>
@@ -853,14 +953,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div>
                     <label className="block text-xs font-medium text-slate-600">B2C Base (per kg)</label>
                     <div className="mt-1 relative rounded-md shadow-xs">
-                      <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">$</span>
+                      <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">Rs.</span>
                       <input
                         type="number"
                         step="0.5"
                         required
                         value={interB2C}
                         onChange={(e) => setInterB2C(parseFloat(e.target.value) || 0)}
-                        className="block w-full pl-6 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
+                        className="block w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
                       />
                     </div>
                   </div>
@@ -868,7 +968,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
               </div>
             </div>
 
-            {/* Cash on Delivery handling Surcharge */}
             <div className="p-4 bg-amber-50/40 border border-amber-100 rounded-xl space-y-4">
               <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-amber-800 block">C) CASH ON DELIVERY SURCHARGE</span>
               <p className="text-[11px] text-amber-700">Extra service handling fee charged when a delivery driver acts as a cash collection hub.</p>
@@ -877,13 +976,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <div>
                   <label className="block text-xs font-medium text-slate-600">B2B COD Surcharge</label>
                   <div className="mt-1 relative rounded-md shadow-xs">
-                    <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">$</span>
+                    <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">Rs.</span>
                     <input
                       type="number"
                       required
                       value={codSurchargeB2B}
                       onChange={(e) => setCodSurchargeB2B(parseFloat(e.target.value) || 0)}
-                      className="block w-full pl-6 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
+                      className="block w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
                     />
                   </div>
                 </div>
@@ -891,13 +990,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <div>
                   <label className="block text-xs font-medium text-slate-600">B2C COD Surcharge</label>
                   <div className="mt-1 relative rounded-md shadow-xs">
-                    <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">$</span>
+                    <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">Rs.</span>
                     <input
                       type="number"
                       required
                       value={codSurchargeB2C}
                       onChange={(e) => setCodSurchargeB2C(parseFloat(e.target.value) || 0)}
-                      className="block w-full pl-6 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
+                      className="block w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
                     />
                   </div>
                 </div>
@@ -906,9 +1005,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
             <button
               type="submit"
-              className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-lg text-xs shadow-xs transition"
+              disabled={isSavingRates}
+              className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white font-semibold rounded-lg text-xs shadow-xs transition"
             >
-              Save Tariff Configurations
+              {isSavingRates ? 'Saving...' : 'Save Tariff Configurations'}
             </button>
           </form>
         </div>
@@ -916,75 +1016,158 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
       {/* -------------------- AGENT MANAGEMENT PAGE -------------------- */}
       {activeTab === 'agents' && (
-        <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-6 animate-fade-in">
-          
-          <div className="pb-4 border-b border-slate-100 mb-6 flex items-center justify-between">
-            <div>
-              <h2 className="text-md font-bold text-slate-800 flex items-center gap-2">
-                <Users className="w-5 h-5 text-blue-600" />
-                Roster Delivery Agents
-              </h2>
-              <p className="text-xs text-slate-500 mt-1">Manage dispatch couriers, coordinate sector assignments, and toggle shifts.</p>
-            </div>
+        <div className="space-y-6 animate-fade-in">
+
+          {/* Onboard new agent */}
+          <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-6">
+            <h2 className="text-md font-bold text-slate-800 flex items-center gap-2 mb-1">
+              <UserPlus className="w-5 h-5 text-blue-600" />
+              Onboard New Delivery Agent
+            </h2>
+            <p className="text-xs text-slate-500 mb-4">Create a login for a new courier and assign their home zone.</p>
+
+            {agentFormError && (
+              <div className="p-3 bg-rose-50 border border-rose-100 text-rose-800 text-xs rounded-lg font-medium mb-4">
+                {agentFormError}
+              </div>
+            )}
+
+            <form onSubmit={handleAddAgent} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+              <div>
+                <label className="block text-[10px] font-mono font-bold uppercase text-slate-500 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  required
+                  value={newAgentName}
+                  onChange={(e) => setNewAgentName(e.target.value)}
+                  placeholder="Agent name"
+                  className="block w-full text-xs border border-slate-200 rounded-lg p-2 focus:outline-hidden"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-mono font-bold uppercase text-slate-500 mb-1">Email</label>
+                <input
+                  type="email"
+                  required
+                  value={newAgentEmail}
+                  onChange={(e) => setNewAgentEmail(e.target.value)}
+                  placeholder="agent6@gmail.com"
+                  className="block w-full text-xs border border-slate-200 rounded-lg p-2 focus:outline-hidden"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-mono font-bold uppercase text-slate-500 mb-1">Password</label>
+                <input
+                  type="text"
+                  required
+                  value={newAgentPassword}
+                  onChange={(e) => setNewAgentPassword(e.target.value)}
+                  placeholder="Agent6"
+                  className="block w-full text-xs border border-slate-200 rounded-lg p-2 focus:outline-hidden"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-mono font-bold uppercase text-slate-500 mb-1">Phone</label>
+                <input
+                  type="tel"
+                  value={newAgentPhone}
+                  onChange={(e) => setNewAgentPhone(e.target.value)}
+                  placeholder="+91 98220 00000"
+                  className="block w-full text-xs border border-slate-200 rounded-lg p-2 focus:outline-hidden"
+                />
+              </div>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="block text-[10px] font-mono font-bold uppercase text-slate-500 mb-1">Home Zone</label>
+                  <select
+                    value={newAgentZoneId}
+                    onChange={(e) => setNewAgentZoneId(e.target.value)}
+                    className="block w-full text-xs border border-slate-200 rounded-lg p-2 bg-white focus:outline-hidden"
+                  >
+                    <option value="">Unassigned</option>
+                    {zones.map(z => (
+                      <option key={z.id} value={z.id}>{z.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="submit"
+                  disabled={isAddingAgent}
+                  className="py-2 px-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg text-xs font-semibold transition whitespace-nowrap"
+                >
+                  {isAddingAgent ? 'Adding...' : 'Add'}
+                </button>
+              </div>
+            </form>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {agents.map(ag => (
-              <div key={ag.id} className="p-4 rounded-xl border border-slate-100 shadow-xs bg-slate-50/40 space-y-4">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-800">{ag.name}</h3>
-                    <span className="text-[10px] text-slate-400 font-mono">ID: {ag.id}</span>
-                  </div>
-                  
-                  {/* Status indicator */}
-                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${ag.status === 'available' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-200 text-slate-600'}`}>
-                    {ag.status}
-                  </span>
-                </div>
-
-                <div className="space-y-1.5 text-[11px] text-slate-500">
-                  <div className="flex justify-between">
-                    <span>Email Address</span>
-                    <span className="font-semibold text-slate-700">{ag.email}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Contact Line</span>
-                    <span className="font-semibold text-slate-700">{ag.phone}</span>
-                  </div>
-                  <div className="flex justify-between items-center pt-1 border-t border-slate-100/60">
-                    <span className="font-semibold text-slate-400 font-mono">SECTOR</span>
-                    
-                    {/* Zone selector */}
-                    <select
-                      value={ag.zone}
-                      onChange={(e) => updateAgent(ag.id, { zone: e.target.value })}
-                      className="border border-slate-200 rounded p-1 bg-white text-[10px] font-medium text-slate-700"
-                    >
-                      {zones.map(z => (
-                        <option key={z.id} value={z.name}>{z.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Switch toggler availability */}
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-[10px] font-mono font-bold uppercase text-slate-400">Shift Availability</span>
-                  
-                  <button
-                    onClick={() => updateAgent(ag.id, { status: ag.status === 'available' ? 'busy' : 'available' })}
-                    className="flex items-center gap-1 text-slate-500 hover:text-slate-800 transition"
-                  >
-                    {ag.status === 'available' ? (
-                      <ToggleRight className="w-8 h-8 text-blue-600" />
-                    ) : (
-                      <ToggleLeft className="w-8 h-8 text-slate-400" />
-                    )}
-                  </button>
-                </div>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-6">
+            <div className="pb-4 border-b border-slate-100 mb-6 flex items-center justify-between">
+              <div>
+                <h2 className="text-md font-bold text-slate-800 flex items-center gap-2">
+                  <Users className="w-5 h-5 text-blue-600" />
+                  Roster Delivery Agents
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">Manage dispatch couriers, coordinate sector assignments, and toggle shifts.</p>
               </div>
-            ))}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {agents.map(ag => (
+                <div key={ag.id} className="p-4 rounded-xl border border-slate-100 shadow-xs bg-slate-50/40 space-y-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-800">{ag.name}</h3>
+                      <span className="text-[10px] text-slate-400 font-mono">ID: {ag.id}</span>
+                    </div>
+                    
+                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${ag.status === 'available' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-200 text-slate-600'}`}>
+                      {ag.status}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5 text-[11px] text-slate-500">
+                    <div className="flex justify-between">
+                      <span>Email Address</span>
+                      <span className="font-semibold text-slate-700">{ag.email}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Contact Line</span>
+                      <span className="font-semibold text-slate-700">{ag.phone}</span>
+                    </div>
+                    <div className="flex justify-between items-center pt-1 border-t border-slate-100/60">
+                      <span className="font-semibold text-slate-400 font-mono">SECTOR</span>
+                      
+                      <select
+                        value={ag.zone}
+                        onChange={(e) => handleAgentZoneChange(ag.id, e.target.value)}
+                        className="border border-slate-200 rounded p-1 bg-white text-[10px] font-medium text-slate-700"
+                      >
+                        {!ag.zone && <option value="">Unassigned</option>}
+                        {zones.map(z => (
+                          <option key={z.id} value={z.name}>{z.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                    <span className="text-[10px] font-mono font-bold uppercase text-slate-400">Shift Availability</span>
+                    
+                    <button
+                      onClick={() => handleAgentAvailabilityToggle(ag.id, ag.status)}
+                      className="flex items-center gap-1 text-slate-500 hover:text-slate-800 transition"
+                    >
+                      {ag.status === 'available' ? (
+                        <ToggleRight className="w-8 h-8 text-blue-600" />
+                      ) : (
+                        <ToggleLeft className="w-8 h-8 text-slate-400" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

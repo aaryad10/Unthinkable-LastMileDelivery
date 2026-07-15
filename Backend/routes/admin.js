@@ -130,6 +130,41 @@ router.get("/agents", (req, res) => {
   res.json({ agents });
 });
 
+// POST /admin/agents - onboard a new delivery agent (creates user + agent record)
+router.post("/agents", (req, res) => {
+  const bcrypt = require("bcryptjs");
+  const { name, email, password, phone, zoneId } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "name, email, and password are required" });
+  }
+
+  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email.toLowerCase());
+  if (existing) {
+    return res.status(409).json({ error: "An account with this email already exists" });
+  }
+
+  const passwordHash = bcrypt.hashSync(password, 10);
+  const userResult = db.prepare(`
+    INSERT INTO users (name, email, password_hash, phone, role) VALUES (?, ?, ?, ?, 'agent')
+  `).run(name, email.toLowerCase(), passwordHash, phone || null);
+
+  const agentResult = db.prepare(`
+    INSERT INTO agents (user_id, zone_id, availability) VALUES (?, ?, 'available')
+  `).run(userResult.lastInsertRowid, zoneId || null);
+
+  const agent = db.prepare(`
+    SELECT a.id, a.availability, a.zone_id, z.name as zone_name,
+           u.id as user_id, u.name, u.email, u.phone
+    FROM agents a
+    JOIN users u ON u.id = a.user_id
+    LEFT JOIN zones z ON z.id = a.zone_id
+    WHERE a.id = ?
+  `).get(agentResult.lastInsertRowid);
+
+  res.status(201).json({ agent });
+});
+
 // PATCH /admin/agents/:id - update agent zone or availability
 router.patch("/agents/:id", (req, res) => {
   const { zoneId, availability } = req.body;

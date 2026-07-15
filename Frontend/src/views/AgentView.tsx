@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Order, DeliveryStatus } from '../types';
+import { DeliveryStatus } from '../types';
 import { OrderCard } from '../components/OrderCard';
 import { StatusBadge } from '../components/StatusBadge';
 import { Timeline } from '../components/Timeline';
@@ -26,34 +26,40 @@ export const AgentView: React.FC<AgentViewProps> = ({
   const { currentUser, orders, updateOrderStatus } = useApp();
   const [filterMode, setFilterMode] = useState<'pending' | 'completed'>('pending');
   const [customNote, setCustomNote] = useState('');
-  const [noteError, setNoteError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [isUpdating, setIsUpdating] = useState(false);
 
-  // Get orders assigned to this agent (or Robert Chen's if mock user doesn't match ID)
-  // Robert Chen has id 'agent-1'
-  const agentId = currentUser?.id === 'agent-1-user' ? 'agent-1' : currentUser?.id === 'agent-2-user' ? 'agent-2' : 'agent-1';
+  // orders in context is already scoped by the backend to exactly this
+  // agent's assigned orders (via GET /orders with agent role) - no
+  // client-side re-filtering needed or correct to do here.
+  const myOrders = orders;
 
-  const myOrders = orders.filter(o => o.assignedAgentId === agentId);
-
-  // Divide into pending and completed
-  const pendingOrders = myOrders.filter(o => ['Picked Up', 'In Transit', 'Out for Delivery'].includes(o.status));
+  // Divide into pending and completed. 'Created' orders (awaiting first
+  // pickup) count as pending/open work for the agent too.
+  const pendingOrders = myOrders.filter(o => ['Created', 'Picked Up', 'In Transit', 'Out for Delivery'].includes(o.status));
   const completedOrders = myOrders.filter(o => ['Delivered', 'Failed'].includes(o.status));
 
   const activeWorklist = filterMode === 'pending' ? pendingOrders : completedOrders;
 
   const selectedOrder = orders.find(o => o.id === selectedOrderId);
 
-  // Handle status updating
-  const handleStatusChange = (newStatus: DeliveryStatus, defaultNotes: string) => {
+  // Handle status updating against the real backend, including the
+  // lifecycle transition rules enforced server-side.
+  const handleStatusChange = async (newStatus: DeliveryStatus, defaultNotes: string) => {
     if (!selectedOrderId) return;
-    setNoteError('');
+    setActionError('');
+    setIsUpdating(true);
 
     const finalNote = customNote.trim() ? customNote.trim() : defaultNotes;
-    
-    // Perform update
-    updateOrderStatus(selectedOrderId, newStatus, finalNote);
-    
-    // Clear note text box
-    setCustomNote('');
+    const result = await updateOrderStatus(selectedOrderId, newStatus, finalNote);
+
+    setIsUpdating(false);
+
+    if (result.success) {
+      setCustomNote('');
+    } else {
+      setActionError(result.error || 'Failed to update status.');
+    }
   };
 
   return (
@@ -68,7 +74,7 @@ export const AgentView: React.FC<AgentViewProps> = ({
             <div>
               <span className="text-[10px] font-mono text-slate-400 block uppercase tracking-widest">Active Dispatcher</span>
               <h2 className="text-xl font-bold tracking-tight">{currentUser?.name}</h2>
-              <p className="text-xs text-slate-300 mt-1">Zone: <strong className="text-blue-400">Zone Alpha / Beta Support</strong></p>
+              <p className="text-xs text-slate-300 mt-1">{currentUser?.email}</p>
             </div>
             
             <div className="flex gap-4">
@@ -199,7 +205,7 @@ export const AgentView: React.FC<AgentViewProps> = ({
                     <div className="text-right">
                       <span className="text-[10px] font-mono text-slate-400 block uppercase">COLLECT AMOUNT</span>
                       <span className={`text-md font-extrabold ${selectedOrder.paymentType === 'COD' ? 'text-amber-700' : 'text-slate-500'}`}>
-                        {selectedOrder.paymentType === 'COD' ? `$${selectedOrder.charge.toFixed(2)}` : '$0.00'}
+                        {selectedOrder.paymentType === 'COD' ? `Rs.${selectedOrder.charge.toFixed(2)}` : 'Rs.0.00'}
                       </span>
                     </div>
                   </div>
@@ -216,6 +222,12 @@ export const AgentView: React.FC<AgentViewProps> = ({
                 
                 <div className="bg-white rounded-xl border border-slate-100 p-6 shadow-xs sticky top-4">
                   <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400 mb-4">Dispatcher Operations</h3>
+
+                  {actionError && (
+                    <div className="mb-4 p-3 bg-rose-50 border border-rose-100 text-rose-800 text-xs rounded-lg font-medium">
+                      {actionError}
+                    </div>
+                  )}
                   
                   {/* Driver Note Field */}
                   <div className="mb-6">
@@ -240,23 +252,36 @@ export const AgentView: React.FC<AgentViewProps> = ({
                       Step transitions
                     </span>
 
+                    {selectedOrder.status === 'Created' && (
+                      <button
+                        onClick={() => handleStatusChange('Picked Up', 'Package collected from pickup location.')}
+                        disabled={isUpdating}
+                        className="w-full py-3 px-4 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-2 disabled:opacity-60"
+                      >
+                        <Package className="w-4 h-4" />
+                        {isUpdating ? 'Updating...' : 'Confirm Pickup (Mark "Picked Up")'}
+                      </button>
+                    )}
+
                     {selectedOrder.status === 'Picked Up' && (
                       <button
                         onClick={() => handleStatusChange('In Transit', 'Package sorted and loaded. In transit to sector distribution hub.')}
-                        className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-2"
+                        disabled={isUpdating}
+                        className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-2 disabled:opacity-60"
                       >
                         <Play className="w-4 h-4" />
-                        Dispatched in Hub (Mark "In Transit")
+                        {isUpdating ? 'Updating...' : 'Dispatched in Hub (Mark "In Transit")'}
                       </button>
                     )}
 
                     {selectedOrder.status === 'In Transit' && (
                       <button
                         onClick={() => handleStatusChange('Out for Delivery', 'Package assigned to dispatch courier. Out for final delivery loop.')}
-                        className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-2"
+                        disabled={isUpdating}
+                        className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-2 disabled:opacity-60"
                       >
                         <Truck className="w-4 h-4" />
-                        Load into Courier Van (Mark "Out for Delivery")
+                        {isUpdating ? 'Updating...' : 'Load into Courier Van (Mark "Out for Delivery")'}
                       </button>
                     )}
 
@@ -264,14 +289,16 @@ export const AgentView: React.FC<AgentViewProps> = ({
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <button
                           onClick={() => handleStatusChange('Delivered', 'Package handed over to customer. Recipient signature logged.')}
-                          className="py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-1.5"
+                          disabled={isUpdating}
+                          className="py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-60"
                         >
                           <CheckCircle className="w-4 h-4" />
                           Mark Delivered
                         </button>
                         <button
                           onClick={() => handleStatusChange('Failed', 'Delivery attempt failed. Recipient not present / unreachable.')}
-                          className="py-3 px-4 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-1.5"
+                          disabled={isUpdating}
+                          className="py-3 px-4 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-60"
                         >
                           <XCircle className="w-4 h-4" />
                           Mark Failed Attempt

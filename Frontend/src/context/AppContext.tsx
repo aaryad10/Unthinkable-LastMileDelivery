@@ -23,6 +23,7 @@ interface AppContextType {
   updateRateCard: (routeType: 'intraZone' | 'interZone', orderType: 'B2B' | 'B2C', rate: number) => Promise<{ success: boolean; error?: string }>;
   updateCodSurcharge: (orderType: 'B2B' | 'B2C', surcharge: number) => Promise<{ success: boolean; error?: string }>;
   updateAgent: (agentId: string, updates: { zoneId?: string; availability?: 'available' | 'busy' | 'offline' }) => Promise<{ success: boolean; error?: string }>;
+  addAgent: (name: string, email: string, password: string, phone: string, zoneId?: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 interface QuoteParams {
@@ -371,6 +372,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message || 'Failed to update agent' };
+    }
+  };
+
+  const addAgent = async (name: string, email: string, password: string, phone: string, zoneId?: string) => {
+    try {
+      await api.createAgent({ name, email, password, phone, zoneId });
+      await loadZonesAndAgents();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to add agent' };
     }
   };
 

@@ -12,6 +12,49 @@ function generateOrderCode() {
   return `LMD-${n}`;
 }
 
+/**
+ * Validates package dimensions/weight properly — rejects negative, zero,
+ * non-numeric, and missing values, without the "!0 is truthy-falsy" bug
+ * of a plain falsy check (which would wrongly reject a legitimate 0
+ * and let negative numbers slip through unrejected).
+ */
+function validatePackageInputs({ lengthCm, widthCm, heightCm, actualWeightKg }) {
+  const fields = { lengthCm, widthCm, heightCm, actualWeightKg };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined || value === null || value === "") {
+      return `${key} is required`;
+    }
+    const num = Number(value);
+    if (Number.isNaN(num)) {
+      return `${key} must be a valid number`;
+    }
+    if (num <= 0) {
+      return `${key} must be greater than zero`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Order status lifecycle state machine. Defines exactly which transitions
+ * are legal from each status — prevents skipping steps (e.g. Created straight
+ * to Delivered) or moving backwards, while still allowing admin override
+ * (handled separately below) and the Failed -> Picked Up reschedule loop.
+ */
+const ALLOWED_TRANSITIONS = {
+  Created: ["Picked Up"],
+  "Picked Up": ["In Transit", "Failed"],
+  "In Transit": ["Out for Delivery", "Failed"],
+  "Out for Delivery": ["Delivered", "Failed"],
+  Delivered: [], // terminal
+  Failed: ["Picked Up"], // only via the reschedule flow
+};
+
+function isValidTransition(fromStatus, toStatus) {
+  const allowed = ALLOWED_TRANSITIONS[fromStatus] || [];
+  return allowed.includes(toStatus);
+}
+
 const ORDER_JOIN_SELECT = `
   SELECT o.*, pz.name as pickup_zone_name, dz.name as drop_zone_name,
          u.name as customer_name, u.email as customer_email, u.phone as customer_phone,
@@ -32,9 +75,11 @@ const ORDER_JOIN_SELECT = `
 router.post("/quote", requireAuth, (req, res) => {
   const { lengthCm, widthCm, heightCm, actualWeightKg, pickupPincode, dropPincode, orderType, paymentType } = req.body;
 
-  if (!lengthCm || !widthCm || !heightCm || !actualWeightKg || !pickupPincode || !dropPincode || !orderType || !paymentType) {
-    return res.status(400).json({ error: "Missing required fields for charge calculation" });
-  }
+  const dimensionErrors = validatePackageInputs({ lengthCm, widthCm, heightCm, actualWeightKg });
+    if (dimensionErrors) return res.status(400).json({ error: dimensionErrors });
+    if (!pickupPincode || !dropPincode || !orderType || !paymentType) {
+      return res.status(400).json({ error: "pickupPincode, dropPincode, orderType, and paymentType are required" });
+    }
 
   try {
     const quote = calculateCharge({
@@ -60,10 +105,11 @@ router.post("/", requireAuth, requireRole("customer", "admin"), (req, res) => {
     orderType, paymentType,
   } = req.body;
 
-  if (!pickupAddress || !pickupPincode || !dropAddress || !dropPincode ||
-      !lengthCm || !widthCm || !heightCm || !actualWeightKg || !orderType || !paymentType) {
+  if (!pickupAddress || !pickupPincode || !dropAddress || !dropPincode || !orderType || !paymentType) {
     return res.status(400).json({ error: "Missing required order fields" });
   }
+  const dimensionErrors = validatePackageInputs({ lengthCm, widthCm, heightCm, actualWeightKg });
+  if (dimensionErrors) return res.status(400).json({ error: dimensionErrors });
 
   const finalCustomerId = req.user.role === "admin" && customerId ? customerId : req.user.id;
 
@@ -255,7 +301,11 @@ router.patch("/:id/status", requireAuth, requireRole("agent", "admin"), async (r
 
   const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(req.params.id);
   if (!order) return res.status(404).json({ error: "Order not found" });
-
+    if (req.user.role === "agent" && !isValidTransition(order.status, status)) {
+    return res.status(409).json({
+      error: `Invalid status transition: cannot move from '${order.status}' to '${status}'. Allowed next steps: ${(ALLOWED_TRANSITIONS[order.status] || []).join(", ") || "none (terminal state)"}`,
+    });
+  }
   if (req.user.role === "agent") {
     const agentRow = db.prepare("SELECT id FROM agents WHERE user_id = ?").get(req.user.id);
     if (!agentRow || order.assigned_agent_id !== agentRow.id) {
@@ -298,6 +348,7 @@ router.patch("/:id/status", requireAuth, requireRole("agent", "admin"), async (r
  * Reassigns an agent for the new attempt (per brief: "agent is reassigned
  * for the rescheduled attempt").
  */
+
 router.post("/:id/reschedule", requireAuth, requireRole("customer"), async (req, res) => {
   const { date } = req.body;
   if (!date) return res.status(400).json({ error: "date is required" });
@@ -310,6 +361,11 @@ router.post("/:id/reschedule", requireAuth, requireRole("customer"), async (req,
   }
 
   db.prepare("UPDATE orders SET status = 'Picked Up', scheduled_date = ? WHERE id = ?").run(date, order.id);
+
+  db.prepare(`
+    INSERT INTO order_reschedules (order_id, requested_date, requested_by_user_id)
+    VALUES (?, ?, ?)
+  `).run(order.id, date, req.user.id);
 
   db.prepare(`
     INSERT INTO order_status_history (order_id, status, notes, actor_user_id, actor_label)

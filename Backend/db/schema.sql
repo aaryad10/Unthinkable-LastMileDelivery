@@ -85,3 +85,14 @@ CREATE TABLE IF NOT EXISTS order_status_history (
   actor_label TEXT NOT NULL,
   timestamp TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Tracks each reschedule request separately from the general status
+-- history, so reschedule counts/dates are directly queryable rather
+-- than parsed out of free-text notes.
+CREATE TABLE IF NOT EXISTS order_reschedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL REFERENCES orders(id),
+  requested_date TEXT NOT NULL,
+  requested_by_user_id INTEGER REFERENCES users(id),
+  requested_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

@@ -61,8 +61,10 @@ export const api = {
     request('/admin/cod-surcharge', { method: 'PUT', body: JSON.stringify({ orderType, surcharge }) }),
 
   listAgents: () => request('/admin/agents'),
+  createAgent: (payload: any) => request('/admin/agents', { method: 'POST', body: JSON.stringify(payload) }),
   updateAgent: (id: number | string, payload: any) =>
     request(`/admin/agents/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  
 
   listCustomers: () => request('/admin/customers'),
 
