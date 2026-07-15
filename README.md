@@ -1,6 +1,43 @@
 # Last-Mile Delivery Tracker
 
-A full-stack delivery management platform with role-based access for **Customers**, **Delivery Agents**, and **Admins**. Supports auto-calculated shipping charges, zone-based agent assignment, immutable order tracking, and email notifications on every status change.
+A full-stack delivery management platform with role-based access for **Customers**, **Delivery Agents**, and **Admins**. Supports auto-calculated shipping charges, zone-based agent assignment, immutable order tracking, and email + SMS notifications on every status change.
+
+## 🔗 Live Links
+
+| | |
+|---|---|
+| **Frontend (app)** | [unthinkable-last-mile-delivery.vercel.app](https://unthinkable-last-mile-delivery.vercel.app/) |
+| **Backend (API health check)** | [unthinkable-lastmiledelivery.onrender.com](https://unthinkable-lastmiledelivery.onrender.com/) |
+
+> ⚠️ **Cold starts:** the backend is hosted on Render's free tier, which spins the server down after ~15 minutes of inactivity. If the app has been idle, the **first request can take 30–60 seconds** while the server wakes up — login or the first data fetch may look stuck or slow. Subsequent requests are fast. This is a hosting-tier limitation, not an application bug.
+
+## 📸 Screenshots
+
+<!-- Replace each placeholder below with an actual screenshot. Recommended: PNG, ~1280px wide. -->
+
+### Auth
+| Login | Register |
+|---|---|
+| ![Login screen](<img width="567" height="882" alt="image" src="https://github.com/user-attachments/assets/4e2093a6-7593-4a2a-96ce-c8227d143638" />) | ![Register screen](<img width="572" height="851" alt="image" src="https://github.com/user-attachments/assets/cd621653-2fc1-485b-a030-4086547c9a67" />) |
+
+### Customer
+| Book an order (quote preview) | Order tracking timeline |
+|---|---|
+| ![Customer booking flow](<img width="1912" height="903" alt="image" src="https://github.com/user-attachments/assets/572fdd3e-f6e2-49ef-8a03-7425a964a3de" />) | ![Order tracking timeline](<img width="1918" height="908" alt="image" src="https://github.com/user-attachments/assets/c662b758-66d4-4986-a3e1-3ed838f97bf1" />) |
+
+### Delivery Agent
+| Assigned orders | Update status |
+|---|---|
+| ![Agent order list](<img width="1918" height="896" alt="image" src="https://github.com/user-attachments/assets/65dd1a31-66a2-4a6e-a6e1-b46fa8635e66" />) | ![Agent status update](<img width="1918" height="906" alt="image" src="https://github.com/user-attachments/assets/b6a49fe3-dd38-4a11-a5dd-12f444f52505" />) |
+
+### Admin
+| Dashboard | Create order on behalf of customer |
+|---|---|
+| ![Admin dashboard](<img width="1918" height="908" alt="image" src="https://github.com/user-attachments/assets/560632fb-75c8-4db7-b722-5868ea3438a5" />) | ![Admin dispatch form](<img width="1918" height="902" alt="image" src="https://github.com/user-attachments/assets/183df5d4-bdc0-45ea-ba2b-49a47b7ef3af" />) |
+
+| Zones & rate cards | Agent roster |
+|---|---|
+| ![Zones and rate cards](<img width="1918" height="906" alt="image" src="https://github.com/user-attachments/assets/a61209e9-0da6-4eb4-b33a-eca5f862eff2" />) | ![Agent roster](<img width="1918" height="905" alt="image" src="https://github.com/user-attachments/assets/0bc51cc2-ebb9-46ff-aeb4-d9392c27fdd4" />) |
 
 ## Tech Stack
 
@@ -11,6 +48,8 @@ A full-stack delivery management platform with role-based access for **Customers
 | Database | SQLite (via `better-sqlite3`) |
 | Auth | JWT (`jsonwebtoken`) + `bcryptjs` password hashing |
 | Email | Nodemailer (SMTP), console-log fallback if unconfigured |
+| SMS | Free-tier SMS provider integration, console-log fallback if unconfigured |
+| Hosting | Vercel (frontend), Render (backend) |
 
 ## Project Structure
 
@@ -28,9 +67,10 @@ LastMileDeli/
 │   │   ├── orders.js         # quote / create / list / assign / status / reschedule
 │   │   └── admin.js          # zones / rate cards / agents / customers
 │   ├── services/
-│   │   ├── rateEngine.js     # Charge calculation
-│   │   ├── assignmentEngine.js  # Agent auto-assignment
-│   │   └── emailService.js   # Status-change emails
+│   │   ├── rateEngine.js         # Charge calculation
+│   │   ├── assignmentEngine.js   # Agent auto-assignment
+│   │   ├── emailService.js       # Status-change emails
+│   │   └── smsService.js         # Status-change SMS
 │   └── server.js
 └── Frontend/
     └── src/
@@ -66,6 +106,9 @@ SMTP_PORT=587
 SMTP_USER=your-email@gmail.com
 SMTP_PASS=your-gmail-app-password
 SMTP_FROM=your-email@gmail.com
+
+# Optional — omit to fall back to console-logged SMS
+SMS_API_KEY=your-sms-provider-key
 ```
 
 > **Note:** `SMTP_PASS` must be a [Gmail App Password](https://myaccount.google.com/apppasswords), not your regular Gmail password (requires 2FA enabled on the account).
@@ -143,6 +186,17 @@ Final charge = `chargeable_weight × rate_per_kg + COD_surcharge` (rounded to 2 
 
 This logic is exposed standalone via `POST /orders/quote` so the frontend can show the price **before** the customer confirms, without creating an order.
 
+## Order Status Lifecycle
+
+Status moves through a fixed state machine (`services`/`routes/orders.js`):
+
+```
+Created → Picked Up → In Transit → Out for Delivery → Delivered
+                                                      ↘ Failed → (reschedule) → Picked Up
+```
+
+Agents can only move an order to the next allowed status — skipping steps or moving backward is rejected. Admins can override any order to any status regardless of the current state. Every transition — agent-driven or admin override — is appended to `order_status_history` and never edited or deleted, forming a full immutable audit trail per order.
+
 ## API Reference
 
 All endpoints except `/auth/register` and `/auth/login` require `Authorization: Bearer <token>`.
@@ -162,7 +216,7 @@ All endpoints except `/auth/register` and `/auth/login` require `Authorization: 
 | GET | `/orders` | Any (role-scoped) | Lists orders — customers see their own, agents see assigned, admins see all. Supports `?status=&zoneId=&agentId=` filters |
 | GET | `/orders/:id` | Any (access-checked) | Full order detail + timeline |
 | PATCH | `/orders/:id/assign` | Admin | Body `{ agentId }` for manual assignment, or `{ auto: true }` for auto-assignment |
-| PATCH | `/orders/:id/status` | Agent (own orders), Admin (any) | Updates status, logs history, emails customer, releases agent on terminal states |
+| PATCH | `/orders/:id/status` | Agent (own orders, sequence-enforced), Admin (any, override) | Updates status, logs history, emails + SMSes customer, releases agent on terminal states |
 | POST | `/orders/:id/reschedule` | Customer | Reschedules a `Failed` order, reassigns an agent |
 
 ### Admin
@@ -175,11 +229,12 @@ All endpoints except `/auth/register` and `/auth/login` require `Authorization: 
 | PUT | `/admin/rate-cards` | Update a rate (`routeType`, `orderType`, `ratePerKg`) |
 | PUT | `/admin/cod-surcharge` | Update COD surcharge for an order type |
 | GET | `/admin/agents` | List agents with zone + availability |
+| POST | `/admin/agents` | Onboard a new delivery agent |
 | PATCH | `/admin/agents/:id` | Update an agent's zone or availability |
 
 ## Known Limitations
 
-- Auto-assignment uses the agent's home **zone** as a proxy for "nearest" — there is no live GPS/lat-long distance tracking of agents.
-- Status transitions are not sequence-validated (an admin/agent can set any valid status regardless of current state); this is intentional to allow admin overrides but means the agent-side flow has no client-side guardrail against skipping steps.
-- SMS notifications are not yet implemented — only email.
-- SQLite is file-based; for production deployment on serverless hosts (Vercel), a persistent-disk host (Render/Railway) or a migration to Postgres is required.
+- Auto-assignment uses the agent's home **zone** as a proxy for "nearest" — there is no live GPS/lat-long distance tracking of agents as of now.
+- Auth trusts the role embedded in the JWT for the life of the token rather than re-checking the user's current role in the database on every request.
+- `GET /orders` returns the full result set for the caller's scope with no pagination — fine at current data volumes, but would need `?page=&limit=` for a larger dataset.
+- SQLite is file-based; the Render free-tier disk is ephemeral on redeploys, so seeded/demo data may reset when the backend service is redeployed. A persistent-disk plan or a migration to Postgres would be needed for durable production data.
