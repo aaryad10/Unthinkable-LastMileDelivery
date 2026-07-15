@@ -4,6 +4,7 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const { calculateCharge, detectZone } = require("../services/rateEngine");
 const { autoAssignAgent, releaseAgent, findBestAgent } = require("../services/assignmentEngine");
 const { sendStatusEmail } = require("../services/emailService");
+const { sendStatusSms } = require("../services/smsService");
 
 const router = express.Router();
 
@@ -326,12 +327,18 @@ router.patch("/:id/status", requireAuth, requireRole("agent", "admin"), async (r
     releaseAgent(order.assigned_agent_id);
   }
 
-  // Email the customer on every status change
-  const customer = db.prepare("SELECT name, email FROM users WHERE id = ?").get(order.customer_id);
-  await sendStatusEmail({
-    toEmail: customer.email, toName: customer.name,
-    orderCode: order.order_code, status, notes,
-  });
+  // Email + SMS the customer on every status change
+  const customer = db.prepare("SELECT name, email, phone FROM users WHERE id = ?").get(order.customer_id);
+  await Promise.all([
+    sendStatusEmail({
+      toEmail: customer.email, toName: customer.name,
+      orderCode: order.order_code, status, notes,
+    }),
+    sendStatusSms({
+      toPhone: customer.phone,
+      orderCode: order.order_code, status, notes,
+    }),
+  ]);
 
   const updatedOrder = db.prepare(`${ORDER_JOIN_SELECT} WHERE o.id = ?`).get(order.id);
   const timeline = db
@@ -375,12 +382,19 @@ router.post("/:id/reschedule", requireAuth, requireRole("customer"), async (req,
   // Reassign an agent for the rescheduled attempt
   const assignResult = autoAssignAgent(order.id, order.pickup_zone_id);
 
-  const customer = db.prepare("SELECT name, email FROM users WHERE id = ?").get(order.customer_id);
-  await sendStatusEmail({
-    toEmail: customer.email, toName: customer.name,
-    orderCode: order.order_code, status: "Picked Up",
-    notes: `Rescheduled for ${date}.`,
-  });
+  const customer = db.prepare("SELECT name, email, phone FROM users WHERE id = ?").get(order.customer_id);
+  await Promise.all([
+    sendStatusEmail({
+      toEmail: customer.email, toName: customer.name,
+      orderCode: order.order_code, status: "Picked Up",
+      notes: `Rescheduled for ${date}.`,
+    }),
+    sendStatusSms({
+      toPhone: customer.phone,
+      orderCode: order.order_code, status: "Picked Up",
+      notes: `Rescheduled for ${date}.`,
+    }),
+  ]);
 
   const updatedOrder = db.prepare(`${ORDER_JOIN_SELECT} WHERE o.id = ?`).get(order.id);
   const timeline = db
